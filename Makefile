@@ -1,5 +1,3 @@
-.PHONY: ansible-ping ansible-playbook ansible-playbook-apply ansible-adhoc ansible-list-hosts ansible-lint ssh-forward
-
 ANSIBLE_DIR := ansible
 ANSIBLE_CFG := $(ANSIBLE_DIR)/ansible.cfg
 ANSIBLE_INVENTORY := inventory.yml
@@ -7,12 +5,15 @@ ANSIBLE_HOST := edu-gpu
 SSH_HOST := edu-gpu
 SSH_CONFIG := $(ANSIBLE_DIR)/ssh_config
 
+.PHONY: ansible-ping
 ansible-ping:
 	@cd $(ANSIBLE_DIR) && ansible $(ANSIBLE_HOST) -m ping
 
+.PHONY: ansible-list-hosts
 ansible-list-hosts:
 	@cd $(ANSIBLE_DIR) && ansible-inventory --list
 
+.PHONY: ansible-playbook
 ansible-playbook:
 	@if [ -z "$(PLAYBOOK)" ]; then \
 		echo "Error: Please specify PLAYBOOK variable. Example: make ansible-playbook PLAYBOOK=playbook.yml"; \
@@ -20,6 +21,7 @@ ansible-playbook:
 	fi
 	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) --check $(PLAYBOOK)
 
+.PHONY: ansible-playbook-apply
 ansible-playbook-apply:
 	@if [ -z "$(PLAYBOOK)" ]; then \
 		echo "Error: Please specify PLAYBOOK variable. Example: make ansible-playbook-apply PLAYBOOK=playbook.yml"; \
@@ -27,6 +29,7 @@ ansible-playbook-apply:
 	fi
 	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) $(PLAYBOOK)
 
+.PHONY: ansible-adhoc
 ansible-adhoc:
 	@if [ -z "$(MODULE)" ] || [ -z "$(ARGS)" ]; then \
 		echo "Error: Please specify MODULE and ARGS variables. Example: make ansible-adhoc MODULE=shell ARGS='uptime'"; \
@@ -34,12 +37,15 @@ ansible-adhoc:
 	fi
 	@cd $(ANSIBLE_DIR) && ansible $(ANSIBLE_HOST) -m $(MODULE) -a "$(ARGS)"
 
+.PHONY: ansible-gather-facts
 ansible-gather-facts:
 	@cd $(ANSIBLE_DIR) && ansible $(ANSIBLE_HOST) -m setup
 
+.PHONY: ansible-lint
 ansible-lint:
 	@cd $(ANSIBLE_DIR) && ansible-lint $(if $(PLAYBOOK),$(PLAYBOOK),.)
 
+.PHONY: ssh-forward
 ssh-forward:
 	@if [ -z "$(PORT)" ]; then \
 		echo "Error: Please specify PORT variable. Example: make ssh-forward PORT=8080"; \
