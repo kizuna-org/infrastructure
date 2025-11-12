@@ -1,0 +1,184 @@
+- name: Get user home directory
+  ansible.builtin.command: echo $HOME
+  register: home_dir_result
+  changed_when: false
+  when: ansible_env.HOME is not defined
+
+- name: Resolve user home directory
+  ansible.builtin.set_fact:
+    resolved_home: "{{ ansible_env.HOME | default(home_dir_result.stdout | default('')) }}"
+
+- name: Set kind install path
+  ansible.builtin.set_fact:
+    kind_path: >-
+      {{
+        kind_install_path
+        | default(resolved_home ~ '/.local/bin/kind')
+      }}
+
+- name: Get kind install directory from path
+  ansible.builtin.set_fact:
+    kind_install_dir: "{{ kind_path | dirname }}"
+
+- name: Create kind install directory
+  ansible.builtin.file:
+    path: "{{ kind_install_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Create docker wrapper script
+  ansible.builtin.copy:
+    dest: "{{ kind_install_dir }}/docker"
+    content: |
+      #!/bin/bash
+      # Docker wrapper script that uses sudo
+      exec sudo docker "$@"
+    mode: '0755'
+
+- name: Build proxy environment
+  ansible.builtin.set_fact:
+    kind_proxy_env: >-
+      {{
+        {}
+        | combine(http_proxy_mapping)
+        | combine(https_proxy_mapping)
+        | combine(http_proxy_lower_mapping)
+        | combine(https_proxy_lower_mapping)
+        | combine(no_proxy_mapping)
+        | combine(path_mapping)
+      }}
+  vars:
+    default_proxy: "http://http-p.srv.cc.suzuka-ct.ac.jp:8080"
+    http_proxy_candidate: "{{ kind_http_proxy | default(ansible_env.HTTP_PROXY | default(ansible_env.http_proxy | default(default_proxy))) }}"
+    https_proxy_candidate: "{{ kind_https_proxy | default(ansible_env.HTTPS_PROXY | default(ansible_env.https_proxy | default(default_proxy))) }}"
+    no_proxy_candidate: "{{ kind_no_proxy | default(ansible_env.NO_PROXY | default(ansible_env.no_proxy | default(''))) }}"
+    http_proxy_mapping: >-
+      {{
+        {'HTTP_PROXY': http_proxy_candidate}
+        if http_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    https_proxy_mapping: >-
+      {{
+        {'HTTPS_PROXY': https_proxy_candidate}
+        if https_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    http_proxy_lower_mapping: >-
+      {{
+        {'http_proxy': http_proxy_candidate}
+        if http_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    https_proxy_lower_mapping: >-
+      {{
+        {'https_proxy': https_proxy_candidate}
+        if https_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    no_proxy_mapping: >-
+      {{
+        {'NO_PROXY': no_proxy_candidate}
+        if no_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    path_mapping: >-
+      {{
+        {'PATH': kind_install_dir ~ ':' ~ (ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin'))}
+      }}
+
+- name: Display proxy environment
+  ansible.builtin.debug:
+    var: kind_proxy_env
+
+- name: Determine OS and architecture
+  ansible.builtin.set_fact:
+    kind_os: "{{ 'darwin' if ansible_system == 'Darwin' else 'linux' }}"
+    kind_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Download kind binary
+  ansible.builtin.get_url:
+    url: "https://kind.sigs.k8s.io/dl/v0.20.0/kind-{{ kind_os }}-{{ kind_arch }}"
+    dest: "{{ kind_path }}"
+    mode: '0755'
+  environment: "{{ kind_proxy_env }}"
+
+- name: Verify kind installation
+  ansible.builtin.command: "{{ kind_path }} version"
+  register: kind_version
+  changed_when: false
+  environment: "{{ kind_proxy_env }}"
+
+- name: Display kind version
+  ansible.builtin.debug:
+    var: kind_version.stdout
+
+- name: Check if kind cluster exists
+  ansible.builtin.command: "{{ kind_path }} get clusters"
+  register: kind_clusters
+  changed_when: false
+  failed_when: false
+  environment: "{{ kind_proxy_env }}"
+
+- name: Set cluster name
+  ansible.builtin.set_fact:
+    target_cluster_name: "{{ kind_cluster_name | default('kind') }}"
+
+- name: Check if target cluster exists
+  ansible.builtin.set_fact:
+    cluster_exists: "{{ kind_clusters.rc == 0 and kind_clusters.stdout is defined and kind_clusters.stdout | length > 0 and target_cluster_name in kind_clusters.stdout }}"
+  when: kind_clusters.rc == 0
+
+- name: Set cluster exists (when command failed)
+  ansible.builtin.set_fact:
+    cluster_exists: false
+  when: kind_clusters.rc != 0
+
+- name: Create kind cluster
+  ansible.builtin.command: >
+    {{ kind_path }} create cluster
+    --name {{ target_cluster_name }}
+  args:
+    creates: "{{ target_cluster_name }}"
+  when: not cluster_exists | default(false)
+  register: kind_create_result
+  environment: "{{ kind_proxy_env }}"
+
+- name: Display cluster creation result
+  ansible.builtin.debug:
+    var: kind_create_result.stdout_lines
+  when: kind_create_result.changed | default(false)
+
+- name: Get kubeconfig path
+  ansible.builtin.set_fact:
+    kubeconfig_path: "{{ resolved_home }}/.kube/config"
+
+- name: Display kubeconfig path
+  ansible.builtin.debug:
+    msg: "Kubeconfig is available at: {{ kubeconfig_path }}"
+
+- name: Verify cluster is running
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image | default('rancher/kubectl:v1.30.3') }}"
+      - cluster-info
+      - --context
+      - "kind-{{ target_cluster_name }}"
+  register: cluster_info
+  changed_when: false
+  environment: "{{ kind_proxy_env }}"
+
+- name: Display cluster info
+  ansible.builtin.debug:
+    var: cluster_info.stdout_lines
