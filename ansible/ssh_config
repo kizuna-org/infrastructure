@@ -10,6 +10,6 @@ Host edu-gpu
   ProxyJump snct-proxy-srv.shiron.dev
   IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
   IdentitiesOnly yes
-  IdentityFile /Users/s28628/projects/github.com/kizuna-org/infrastructure/ansible/data/edu-gpu.pub
+  IdentityFile ./data/edu-gpu.pub
   PubkeyAuthentication yes
   PasswordAuthentication no
