@@ -1,0 +1,6 @@
+- name: Setup kind cluster
+  hosts: edu-gpu
+  gather_facts: true
+  roles:
+    - kind
+
