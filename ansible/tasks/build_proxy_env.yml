@@ -1,0 +1,72 @@
+- name: Build proxy environment
+  ansible.builtin.set_fact:
+    "{{ proxy_env_var_name }}": >-
+      {{
+        {}
+        | combine(http_proxy_mapping)
+        | combine(https_proxy_mapping)
+        | combine(http_proxy_lower_mapping)
+        | combine(https_proxy_lower_mapping)
+        | combine(no_proxy_mapping)
+        | combine(path_mapping | default({}))
+      }}
+  vars:
+    default_proxy: "http://http-p.srv.cc.suzuka-ct.ac.jp:8080"
+    http_proxy_candidate: >-
+      {{
+        (http_proxy_value | default('') | length > 0)
+        | ternary(
+            http_proxy_value,
+            ansible_env.HTTP_PROXY | default(ansible_env.http_proxy | default(default_proxy))
+          )
+      }}
+    https_proxy_candidate: >-
+      {{
+        (https_proxy_value | default('') | length > 0)
+        | ternary(
+            https_proxy_value,
+            ansible_env.HTTPS_PROXY | default(ansible_env.https_proxy | default(default_proxy))
+          )
+      }}
+    no_proxy_candidate: >-
+      {{
+        no_proxy_value
+        | default(ansible_env.NO_PROXY | default(ansible_env.no_proxy | default('')))
+      }}
+    http_proxy_mapping: >-
+      {{
+        {'HTTP_PROXY': http_proxy_candidate}
+        if http_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    https_proxy_mapping: >-
+      {{
+        {'HTTPS_PROXY': https_proxy_candidate}
+        if https_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    http_proxy_lower_mapping: >-
+      {{
+        {'http_proxy': http_proxy_candidate}
+        if http_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    https_proxy_lower_mapping: >-
+      {{
+        {'https_proxy': https_proxy_candidate}
+        if https_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    no_proxy_mapping: >-
+      {{
+        {'NO_PROXY': no_proxy_candidate}
+        if no_proxy_candidate | default('', true) | length > 0
+        else {}
+      }}
+    path_mapping: >-
+      {{
+        {'PATH': install_dir ~ ':' ~ (ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin'))}
+        if install_dir is defined and install_dir | length > 0
+        else {}
+      }}
+
