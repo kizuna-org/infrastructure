@@ -1,0 +1,123 @@
+- name: Get user home directory
+  ansible.builtin.command: echo $HOME
+  register: home_dir_result
+  changed_when: false
+  when: ansible_env.HOME is not defined
+
+- name: Resolve user home directory
+  ansible.builtin.set_fact:
+    resolved_home: "{{ ansible_env.HOME | default(home_dir_result.stdout | default('')) }}"
+
+- name: Include common proxy environment task
+  ansible.builtin.include_tasks: ../../tasks/build_proxy_env.yml
+  vars:
+    proxy_env_var_name: argocd_proxy_env
+    http_proxy_value: "{{ argocd_http_proxy | default('') }}"
+    https_proxy_value: "{{ argocd_https_proxy | default('') }}"
+    no_proxy_value: "{{ argocd_no_proxy | default('') }}"
+
+- name: Configure ArgoCD installation settings
+  ansible.builtin.set_fact:
+    install_argocd: "{{ (argocd_install | default(true)) | bool }}"
+    argocd_manifest_url: "{{ argocd_manifest_url_input | default('https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml') }}"
+    argocd_manifest_dir: "{{ resolved_home }}/.cache/argocd"
+    argocd_manifest_path: "{{ resolved_home }}/.cache/argocd/install.yaml"
+    kubeconfig_path: "{{ resolved_home }}/.kube/config"
+    target_cluster_name: "{{ kind_cluster_name | default('kind') }}"
+
+- name: Ensure ArgoCD manifest directory exists
+  ansible.builtin.file:
+    path: "{{ argocd_manifest_dir }}"
+    state: directory
+    mode: '0755'
+  when: install_argocd
+
+- name: Download ArgoCD manifest
+  ansible.builtin.get_url:
+    url: "{{ argocd_manifest_url }}"
+    dest: "{{ argocd_manifest_path }}"
+    mode: '0644'
+  when: install_argocd
+  environment: "{{ argocd_proxy_env }}"
+
+- name: Initialise kubectl environment arguments for docker
+  ansible.builtin.set_fact:
+    kubectl_env_args: []
+  when: install_argocd
+
+- name: Append proxy variables to kubectl docker arguments
+  ansible.builtin.set_fact:
+    kubectl_env_args: "{{ kubectl_env_args + ['-e', item.key ~ '=' ~ item.value] }}"
+  loop: "{{ argocd_proxy_env | dict2items | list }}"
+  when: install_argocd
+
+- name: Build kubectl docker command prefix
+  ansible.builtin.set_fact:
+    kubectl_base_command: >-
+      {{
+        [
+          'sudo',
+          'docker',
+          'run',
+          '--rm',
+          '--network',
+          'host',
+          '-v',
+          kubeconfig_path ~ ':/root/.kube/config:ro',
+          '-v',
+          argocd_manifest_dir ~ ':/workspace:ro',
+          '-u',
+          '0:0'
+        ]
+        + kubectl_env_args
+        + [kubectl_container_image | default('rancher/kubectl:v1.30.3')]
+      }}
+  when: install_argocd
+
+- name: Check if ArgoCD namespace exists
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['get', 'namespace', 'argocd'] }}"
+  register: argocd_namespace_check
+  changed_when: false
+  failed_when: argocd_namespace_check.rc not in [0, 1]
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Create ArgoCD namespace
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['create', 'namespace', 'argocd'] }}"
+  register: argocd_namespace_create
+  environment: "{{ argocd_proxy_env }}"
+  when:
+    - install_argocd
+    - argocd_namespace_check.rc != 0
+
+- name: Apply ArgoCD core manifests
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['apply', '-n', 'argocd', '-f', '/workspace/install.yaml'] }}"
+  register: argocd_apply
+  changed_when: (argocd_apply.stdout | default('')) | regex_search('(configured|created)') is not none
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Wait for ArgoCD deployments to become available
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['wait', '--for=condition=Available', '--namespace', 'argocd', 'deployment', '--all', '--timeout=600s'] }}"
+  register: argocd_wait
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Display ArgoCD deployment status
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['get', 'deployments', '--namespace', 'argocd'] }}"
+  register: argocd_deployments
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Show ArgoCD deployments
+  ansible.builtin.debug:
+    var: argocd_deployments.stdout_lines
+  when: install_argocd
+
