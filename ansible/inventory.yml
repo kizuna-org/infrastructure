@@ -4,3 +4,7 @@ all:
       hosts:
         edu-gpu:
           ansible_user: r03i23
+    proxy:
+      hosts:
+        snct-proxy-srv.shiron.dev:
+          ansible_user: ansible_user

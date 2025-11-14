@@ -1,0 +1,14 @@
+- name: Stop FRP docker compose
+  ansible.builtin.command:
+    cmd: docker compose down
+    chdir: /var/frp
+  register: frp_compose_down
+  failed_when: false
+  changed_when: frp_compose_down.rc == 0
+  listen: Restart FRP docker compose
+
+- name: Start FRP docker compose
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: /var/frp
+  listen: Restart FRP docker compose

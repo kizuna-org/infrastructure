@@ -1,0 +1,10 @@
+cloudflare_tunnel_token: ENC[AES256_GCM,data:hdeJBeEqk8soLPtvnzVUW4sUUJSf3jQIQaLZTVem9ux/3i3WNwVOEG9toYtUfNtmBv/d7r+XQvDxgN/gi0y8nVOTlO/7/HGbmUYTyGHF+olocA3naPlSK0i01ceGUykh+vvOCvXRBtRo7XdsPYreRJUUespKpRtEWXipvj0fBMrtLL8vmQmyM3V9YuGKoJfnsUN1YEG3vzx9b+HZEqo9c+BbBfOK7I59S9borNrMH52qPmd+D/aufQ==,iv:0XN6BlLyi1dxmnsbzAI7p9sSl+XlCL4Ew02RwUi5W9w=,tag:UFh1Yl/HMCh3q4K7JpbPSw==,type:str]
+sops:
+    gcp_kms:
+        - resource_id: projects/kizuna-org/locations/global/keyRings/sops/cryptoKeys/sops-key
+          created_at: "2025-11-14T07:43:52Z"
+          enc: CiQAGOg4RRDl0rnC/5LayY70HI3niwI2CXFQIWAgRPqbvXaUqvMSSQClg6WHTg48Wn/ViEMfW0tcxiJ9m8lzFzJnNzwzbE1N3MNS9LHoEeZ6+JCwBRwjzhx+Q5C9YF5+AbFomVrd6ZWaQEjiEBei1Ts=
+    lastmodified: "2025-11-14T07:43:53Z"
+    mac: ENC[AES256_GCM,data:48Wj+2MP1RXu7EX7dTS8+AOBE2nk7EId7RhOfRyDr3K9luJXce2PkV1PYA5jkamHm0/copD3KKdVqvuIJ9bqevPsMxCGb67/+Z7MmTPbfhuI3BDebnIAtPUj0izX6XVkw0CtCY0SpDPRePum/HCL7LWDIG0BU6V05usrXugArEw=,iv:TD3plSBxetOIuLOkijLg+0OdQSTlaabG2PowiQyHXZY=,tag:Ccyv/xk4nzUHajxI2hZwxQ==,type:str]
+    unencrypted_suffix: _unencrypted
+    version: 3.11.0

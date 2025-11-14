@@ -1,0 +1,62 @@
+- name: Create /var/frp directory
+  become: true
+  ansible.builtin.file:
+    path: /var/frp
+    state: directory
+    mode: '0755'
+
+- name: Create frps subdirectory
+  ansible.builtin.file:
+    path: /var/frp/frps
+    state: directory
+    mode: '0755'
+
+- name: Deploy docker compose.yaml
+  ansible.builtin.copy:
+    src: compose.yaml
+    dest: /var/frp/compose.yaml
+    mode: '0644'
+  notify: Restart FRP docker compose
+
+- name: Deploy frps.toml
+  ansible.builtin.copy:
+    src: frps.toml
+    dest: /var/frp/frps/frps.toml
+    mode: '0644'
+  notify: Restart FRP docker compose
+
+- name: Validate cloudflare_tunnel_token is set
+  ansible.builtin.fail:
+    msg: "cloudflare_tunnel_token variable must be set"
+  when: cloudflare_tunnel_token is not defined or cloudflare_tunnel_token | length == 0
+
+- name: Deploy .env file with CLOUDFLARE_TUNNEL_TOKEN
+  ansible.builtin.copy:
+    content: |
+      CLOUDFLARE_TUNNEL_TOKEN={{ cloudflare_tunnel_token }}
+    dest: /var/frp/.env
+    mode: '0666'
+    no_log: true
+  notify: Restart FRP docker compose
+
+- name: Check if docker compose is installed
+  ansible.builtin.command: docker compose version
+  register: docker_compose_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if docker compose is not installed
+  ansible.builtin.fail:
+    msg: "docker compose is not installed. Please install docker compose first."
+  when: docker_compose_check.rc != 0
+
+- name: Display docker compose status
+  ansible.builtin.command:
+    cmd: docker compose ps
+    chdir: /var/frp
+  register: docker_compose_status
+  changed_when: false
+
+- name: Show docker compose services status
+  ansible.builtin.debug:
+    var: docker_compose_status.stdout_lines

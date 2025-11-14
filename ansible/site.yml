@@ -4,3 +4,9 @@
   roles:
     - kind
     - argocd
+
+- name: Deploy frp docker compose
+  hosts: snct-proxy-srv.shiron.dev
+  gather_facts: true
+  roles:
+    - frp

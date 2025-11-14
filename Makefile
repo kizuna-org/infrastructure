@@ -73,6 +73,12 @@ terraform-lint: terraform-init
 terraform-fmt:
 	cd terraform && terraform fmt -recursive
 
+.PHONY: encrypt
+encrypt: encrypt-ansible-vars encrypt-edu-gpu-kind-portforward
+
+.PHONY: decrypt
+decrypt: decrypt-ansible-vars decrypt-edu-gpu-kind-portforward
+
 .PHONY: encrypt-edu-gpu-kind-portforward
 encrypt-edu-gpu-kind-portforward:
 	sops --encrypt --output kubeconfig/edu-gpu-kind-portforward.sops.yaml kubeconfig/edu-gpu-kind-portforward.yaml
@@ -80,3 +86,24 @@ encrypt-edu-gpu-kind-portforward:
 .PHONY: decrypt-edu-gpu-kind-portforward
 decrypt-edu-gpu-kind-portforward:
 	sops --decrypt --output kubeconfig/edu-gpu-kind-portforward.yaml kubeconfig/edu-gpu-kind-portforward.sops.yaml
+
+.PHONY: encrypt-ansible-vars
+encrypt-ansible-vars:
+	@for vars_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main.yml 2>/dev/null); do \
+		role_dir=$$(dirname $$(dirname $$vars_file)); \
+		role_name=$$(basename $$role_dir); \
+		if [ -f $$vars_file ]; then \
+			echo "Encrypting $$vars_file..."; \
+			sops --encrypt --output $$(dirname $$vars_file)/main.sops.yml $$vars_file || exit 1; \
+		fi; \
+	done
+
+.PHONY: decrypt-ansible-vars
+decrypt-ansible-vars:
+	@for sops_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main.sops.yml 2>/dev/null); do \
+		vars_dir=$$(dirname $$sops_file); \
+		if [ -f $$sops_file ]; then \
+			echo "Decrypting $$sops_file..."; \
+			sops --decrypt --output $$vars_dir/main.yml $$sops_file || exit 1; \
+		fi; \
+	done
