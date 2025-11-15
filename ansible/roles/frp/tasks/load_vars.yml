@@ -2,7 +2,7 @@
   ansible.builtin.include_vars:
     file: main.sops.yml
     name: frp_vars
-  when: (lookup('file', 'vars/main.sops.yml', errors='ignore') | length > 0)
+  when: (lookup('file', role_path + '/vars/main.sops.yml', errors='ignore') | length > 0)
   delegate_to: localhost
   run_once: true
 
