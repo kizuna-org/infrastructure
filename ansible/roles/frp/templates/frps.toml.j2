@@ -9,11 +9,11 @@ vhostHTTPSPort = 443
 webServer.addr = "0.0.0.0"
 webServer.port = 8000
 webServer.user = "admin"
-webServer.password = "frp_admin_password"
+webServer.password = "{{ frp_web_server_password }}"
 
 # 認証設定
 auth.method = "token"
-auth.token = "jenkins_frp_secret_token"
+auth.token = "{{ frp_auth_token }}"
 
 # ログ設定
 log.level = "debug"

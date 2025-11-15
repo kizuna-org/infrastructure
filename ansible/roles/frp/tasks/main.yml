@@ -19,8 +19,8 @@
   notify: Restart FRP docker compose
 
 - name: Deploy frps.toml
-  ansible.builtin.copy:
-    src: frps.toml
+  ansible.builtin.template:
+    src: frps.toml.j2
     dest: /var/frp/frps/frps.toml
     mode: '0644'
   notify: Restart FRP docker compose
@@ -29,6 +29,16 @@
   ansible.builtin.fail:
     msg: "cloudflare_tunnel_token variable must be set"
   when: cloudflare_tunnel_token is not defined or cloudflare_tunnel_token | length == 0
+
+- name: Validate frp_web_server_password is set
+  ansible.builtin.fail:
+    msg: "frp_web_server_password variable must be set"
+  when: frp_web_server_password is not defined or frp_web_server_password | length == 0
+
+- name: Validate frp_auth_token is set
+  ansible.builtin.fail:
+    msg: "frp_auth_token variable must be set"
+  when: frp_auth_token is not defined or frp_auth_token | length == 0
 
 - name: Deploy .env file with CLOUDFLARE_TUNNEL_TOKEN
   ansible.builtin.copy:
