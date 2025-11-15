@@ -10,3 +10,9 @@
   gather_facts: true
   roles:
     - frp
+
+- name: Deploy frp client
+  hosts: edu-gpu-2
+  gather_facts: true
+  roles:
+    - frpc
