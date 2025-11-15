@@ -32,12 +32,20 @@
     mode: '0755'
   when: install_argocd
 
+- name: Check if ArgoCD manifest exists
+  ansible.builtin.stat:
+    path: "{{ argocd_manifest_path }}"
+  register: argocd_manifest_stat
+  when: install_argocd
+
 - name: Download ArgoCD manifest
   ansible.builtin.get_url:
     url: "{{ argocd_manifest_url }}"
     dest: "{{ argocd_manifest_path }}"
     mode: '0644'
-  when: install_argocd
+  when:
+    - install_argocd
+    - not argocd_manifest_stat.stat.exists | default(false)
   environment: "{{ argocd_proxy_env }}"
 
 - name: Initialise kubectl environment arguments for docker
@@ -96,7 +104,9 @@
   ansible.builtin.command:
     argv: "{{ kubectl_base_command + ['apply', '-n', 'argocd', '-f', '/workspace/install.yaml'] }}"
   register: argocd_apply
-  changed_when: (argocd_apply.stdout | default('')) | regex_search('(configured|created)') is not none
+  changed_when: >
+    (argocd_apply.stdout is defined) and
+    (argocd_apply.stdout | regex_search('(created|configured)') is not none)
   environment: "{{ argocd_proxy_env }}"
   when: install_argocd
 

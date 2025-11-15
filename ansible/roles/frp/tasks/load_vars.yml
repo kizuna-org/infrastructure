@@ -1,0 +1,22 @@
+- name: Load encrypted variables from main.sops.yml
+  ansible.builtin.include_vars:
+    file: main.sops.yml
+    name: frp_vars
+  when: (lookup('file', role_path + '/vars/main.sops.yml', errors='ignore') | length > 0)
+  delegate_to: localhost
+  run_once: true
+
+- name: Set cloudflare_tunnel_token from encrypted vars
+  ansible.builtin.set_fact:
+    cloudflare_tunnel_token: "{{ frp_vars.cloudflare_tunnel_token | default(cloudflare_tunnel_token | default('')) }}"
+  when: frp_vars is defined and frp_vars.cloudflare_tunnel_token is defined
+
+- name: Set frp_web_server_password from encrypted vars
+  ansible.builtin.set_fact:
+    frp_web_server_password: "{{ frp_vars.frp_web_server_password | default(frp_web_server_password | default('')) }}"
+  when: frp_vars is defined and frp_vars.frp_web_server_password is defined
+
+- name: Set frp_auth_token from encrypted vars
+  ansible.builtin.set_fact:
+    frp_auth_token: "{{ frp_vars.frp_auth_token | default(frp_auth_token | default('')) }}"
+  when: frp_vars is defined and frp_vars.frp_auth_token is defined
