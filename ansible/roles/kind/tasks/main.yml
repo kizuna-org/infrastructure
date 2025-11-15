@@ -83,8 +83,13 @@
 
 - name: Check if target cluster exists
   ansible.builtin.set_fact:
-    cluster_exists: "{{ kind_clusters.rc == 0 and kind_clusters.stdout is defined and kind_clusters.stdout | length > 0 and target_cluster_name in kind_clusters.stdout }}"
-  when: kind_clusters.rc == 0
+    cluster_exists: >-
+      {{
+        kind_clusters.rc == 0
+        and kind_clusters.stdout is defined
+        and kind_clusters.stdout | length > 0
+        and target_cluster_name in kind_clusters.stdout
+      }}
 
 - name: Set cluster exists (when command failed)
   ansible.builtin.set_fact:
@@ -95,11 +100,10 @@
   ansible.builtin.command: >
     {{ kind_path }} create cluster
     --name {{ target_cluster_name }}
-  args:
-    creates: "{{ target_cluster_name }}"
-  when: not cluster_exists | default(false)
+  when: not (cluster_exists | default(false))
   register: kind_create_result
   environment: "{{ kind_proxy_env }}"
+  changed_when: kind_create_result.rc == 0
 
 - name: Display cluster creation result
   ansible.builtin.debug:
