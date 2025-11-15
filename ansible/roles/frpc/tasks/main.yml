@@ -1,0 +1,22 @@
+- name: Set frpclient directory path
+  ansible.builtin.set_fact:
+    frpclient_dir: "{{ ansible_env.HOME }}/fclient"
+
+- name: Find all files to copy
+  ansible.builtin.find:
+    paths: "{{ role_path }}/files/frpc"
+    recurse: yes
+    file_type: file
+  register: files_to_copy
+  delegate_to: localhost
+  run_once: true
+
+- name: Copy files individually
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ frpclient_dir }}/{{ item.path | replace(role_path + '/files/frpc/', '') }}"
+    mode: "0777"
+  loop: "{{ files_to_copy.files }}"
+  loop_control:
+    label: "{{ item.path | replace(role_path + '/files/frpc/', '') }}"
+  notify: Restart compose
