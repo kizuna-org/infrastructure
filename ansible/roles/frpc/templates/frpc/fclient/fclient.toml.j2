@@ -19,18 +19,18 @@ log.maxDays = 7
 proxyURL = "http://http-p.srv.cc.suzuka-ct.ac.jp:8080"
 
 # Jenkins HTTP プロキシ設定
-[[proxies]]
-name = "jenkins-http"
-type = "http"
-localIP = "jenkins"
-localPort = 8080
-customDomains = ["kizuna-jenkins.shiron.dev"]
+# [[proxies]]
+# name = "jenkins-http"
+# type = "http"
+# localIP = "jenkins"
+# localPort = 8080
+# customDomains = ["kizuna-jenkins.shiron.dev"]
 
-# ↓ このヘルスチェックは直前の "jenkins-http" プロキシに適用されます
-[proxies.healthCheck]
-type = "http"
-path = "/login"
-intervalSeconds = 10
+# # ↓ このヘルスチェックは直前の "jenkins-http" プロキシに適用されます
+# [proxies.healthCheck]
+# type = "http"
+# path = "/login"
+# intervalSeconds = 10
 
 [[proxies]]
 name = "ssh"
@@ -38,6 +38,22 @@ type = "tcp"
 localIP = "host.docker.internal"
 localPort = 22
 remotePort = 6000
+
+# Kubernetes HTTP プロキシ設定
+[[proxies]]
+name = "kube-http"
+type = "http"
+localIP = "host.docker.internal"
+localPort = 43061
+customDomains = ["kizuna-kube.shiron.dev"]
+
+# ArgoCD HTTP プロキシ設定
+[[proxies]]
+name = "argo-http"
+type = "http"
+localIP = "host.docker.internal"
+localPort = 8080
+customDomains = ["kizuna-argo.shiron.dev"]
 
 # Gitea HTTP プロキシ設定 (将来有効にする場合)
 # [[proxies]]
@@ -70,4 +86,3 @@ remotePort = 6000
 # localIP = "gitea"
 # localPort = 22
 # remotePort = 2222
-
