@@ -44,8 +44,6 @@ services:
       - ./fclient/fclient.toml:/etc/fclient.toml
     networks:
       - ci-network
-    depends_on:
-      - jenkins
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -59,8 +57,6 @@ services:
       - "9115:9115"
     networks:
       - ci-network
-    depends_on:
-      - jenkins
     security_opt:
       - no-new-privileges:true
     volumes:
