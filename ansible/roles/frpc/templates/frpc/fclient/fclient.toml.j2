@@ -5,7 +5,7 @@ serverAddr = "frps-connect.shiron.dev"
 serverPort = 443
 # 認証設定
 auth.method = "token"
-auth.token = "jenkins_frp_secret_token"
+auth.token = "{{ auth_token }}"
 
 loginFailExit = false
 
@@ -70,3 +70,4 @@ remotePort = 6000
 # localIP = "gitea"
 # localPort = 22
 # remotePort = 2222
+
