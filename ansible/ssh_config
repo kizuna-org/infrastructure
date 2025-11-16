@@ -13,3 +13,13 @@ Host edu-gpu
   IdentityFile ./data/edu-gpu.pub
   PubkeyAuthentication yes
   PasswordAuthentication no
+
+Host edu-gpu-2
+  HostName 127.0.0.1
+  Port 6000
+  ProxyJump snct-proxy-srv.shiron.dev
+  IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+  IdentitiesOnly yes
+  IdentityFile ./data/edu-gpu.pub
+  PubkeyAuthentication yes
+  PasswordAuthentication no

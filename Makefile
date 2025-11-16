@@ -97,10 +97,25 @@ encrypt-ansible-vars:
 			sops --encrypt --output $$(dirname $$vars_file)/main.sops.yml $$vars_file || exit 1; \
 		fi; \
 	done
+	@for vars_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main/main.yml 2>/dev/null); do \
+		role_dir=$$(dirname $$(dirname $$(dirname $$vars_file))); \
+		role_name=$$(basename $$role_dir); \
+		if [ -f $$vars_file ]; then \
+			echo "Encrypting $$vars_file..."; \
+			sops --encrypt --output $$(dirname $$vars_file)/main.sops.yml $$vars_file || exit 1; \
+		fi; \
+	done
 
 .PHONY: decrypt-ansible-vars
 decrypt-ansible-vars:
 	@for sops_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main.sops.yml 2>/dev/null); do \
+		vars_dir=$$(dirname $$sops_file); \
+		if [ -f $$sops_file ]; then \
+			echo "Decrypting $$sops_file..."; \
+			sops --decrypt --output $$vars_dir/main.yml $$sops_file || exit 1; \
+		fi; \
+	done
+	@for sops_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main/main.sops.yml 2>/dev/null); do \
 		vars_dir=$$(dirname $$sops_file); \
 		if [ -f $$sops_file ]; then \
 			echo "Decrypting $$sops_file..."; \
