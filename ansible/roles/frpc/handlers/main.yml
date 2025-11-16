@@ -8,3 +8,6 @@
       sudo docker compose up -d
     chdir: "{{ frpclient_dir }}"
   changed_when: true
+  async: 60
+  poll: 5
+  ignore_unreachable: true
