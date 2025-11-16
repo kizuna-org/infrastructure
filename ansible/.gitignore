@@ -1,1 +1,2 @@
 roles/*/vars/main.yml
+roles/*/vars/main/main.yml
