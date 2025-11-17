@@ -6,12 +6,14 @@
     mode: '0755'
 
 - name: Create frps subdirectory
+  become: true
   ansible.builtin.file:
     path: /var/frp/frps
     state: directory
     mode: '0755'
 
 - name: Deploy docker compose.yaml
+  become: true
   ansible.builtin.copy:
     src: compose.yaml
     dest: /var/frp/compose.yaml
@@ -19,6 +21,7 @@
   notify: Restart FRP docker compose
 
 - name: Deploy frps.toml
+  become: true
   ansible.builtin.template:
     src: frps.toml.j2
     dest: /var/frp/frps/frps.toml
@@ -41,6 +44,7 @@
   when: frp_auth_token is not defined or frp_auth_token | length == 0
 
 - name: Deploy .env file with CLOUDFLARE_TUNNEL_TOKEN
+  become: true
   ansible.builtin.copy:
     content: |
       CLOUDFLARE_TUNNEL_TOKEN={{ cloudflare_tunnel_token }}
@@ -61,6 +65,7 @@
   when: docker_compose_check.rc != 0
 
 - name: Display docker compose status
+  become: true
   ansible.builtin.command:
     cmd: docker compose ps
     chdir: /var/frp

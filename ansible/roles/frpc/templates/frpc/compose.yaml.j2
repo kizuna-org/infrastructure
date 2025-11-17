@@ -44,6 +44,9 @@ services:
       - ./fclient/fclient.toml:/etc/fclient.toml
     networks:
       - ci-network
+{% if kind_network_exists | default(false) %}
+      - kind-network
+{% endif %}
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -74,4 +77,8 @@ services:
 
 networks:
   ci-network:
-
+{% if kind_network_exists | default(false) %}
+  kind-network:
+    external: true
+    name: "kind"
+{% endif %}

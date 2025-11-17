@@ -39,20 +39,26 @@ localIP = "host.docker.internal"
 localPort = 22
 remotePort = 6000
 
-# Kubernetes HTTP プロキシ設定
+# Kubernetes API Server TCP プロキシ設定（kindネットワーク経由）
 [[proxies]]
-name = "kube-http"
+name = "kube-api-tcp"
 type = "http"
-localIP = "host.docker.internal"
-localPort = 43061
+localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
+localPort = 6443
+# remotePort = 8081
 customDomains = ["kizuna-kube.shiron.dev"]
 
-# ArgoCD HTTP プロキシ設定
+# ArgoCD HTTP プロキシ設定（kindネットワーク経由）
+# 注意: ArgoCDはkindクラスター内でServiceとして動作しているため、
+# kubectl port-forwardでローカルポートに転送するか、
+# NodePort/LoadBalancerとして公開する必要があります
+# ここでは、kind-control-planeコンテナ経由でアクセスを試みます
 [[proxies]]
 name = "argo-http"
 type = "http"
-localIP = "host.docker.internal"
+localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
 localPort = 8080
+# remotePort = 8082
 customDomains = ["kizuna-argo.shiron.dev"]
 
 # Gitea HTTP プロキシ設定 (将来有効にする場合)

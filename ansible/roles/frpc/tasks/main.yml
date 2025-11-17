@@ -2,6 +2,17 @@
   ansible.builtin.set_fact:
     frpclient_dir: "{{ ansible_env.HOME }}/fclient"
 
+- name: Check if kind network exists
+  ansible.builtin.command:
+    cmd: docker network inspect kind
+  register: kind_network_check
+  changed_when: false
+  failed_when: false
+
+- name: Set kind network exists fact
+  ansible.builtin.set_fact:
+    kind_network_exists: "{{ kind_network_check.rc == 0 }}"
+
 - name: Find all template files
   ansible.builtin.find:
     paths: "{{ role_path }}/templates/frpc"
