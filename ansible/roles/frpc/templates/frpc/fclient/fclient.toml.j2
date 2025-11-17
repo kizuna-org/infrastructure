@@ -5,7 +5,7 @@ serverAddr = "frps-connect.shiron.dev"
 serverPort = 443
 # 認証設定
 auth.method = "token"
-auth.token = "jenkins_frp_secret_token"
+auth.token = "{{ auth_token }}"
 
 loginFailExit = false
 
@@ -19,18 +19,18 @@ log.maxDays = 7
 proxyURL = "http://http-p.srv.cc.suzuka-ct.ac.jp:8080"
 
 # Jenkins HTTP プロキシ設定
-[[proxies]]
-name = "jenkins-http"
-type = "http"
-localIP = "jenkins"
-localPort = 8080
-customDomains = ["kizuna-jenkins.shiron.dev"]
+# [[proxies]]
+# name = "jenkins-http"
+# type = "http"
+# localIP = "jenkins"
+# localPort = 8080
+# customDomains = ["kizuna-jenkins.shiron.dev"]
 
-# ↓ このヘルスチェックは直前の "jenkins-http" プロキシに適用されます
-[proxies.healthCheck]
-type = "http"
-path = "/login"
-intervalSeconds = 10
+# # ↓ このヘルスチェックは直前の "jenkins-http" プロキシに適用されます
+# [proxies.healthCheck]
+# type = "http"
+# path = "/login"
+# intervalSeconds = 10
 
 [[proxies]]
 name = "ssh"
@@ -38,6 +38,28 @@ type = "tcp"
 localIP = "host.docker.internal"
 localPort = 22
 remotePort = 6000
+
+# Kubernetes API Server TCP プロキシ設定（kindネットワーク経由）
+[[proxies]]
+name = "kube-api-tcp"
+type = "http"
+localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
+localPort = 6443
+# remotePort = 8081
+customDomains = ["kizuna-kube.shiron.dev"]
+
+# ArgoCD HTTP プロキシ設定（kindネットワーク経由）
+# 注意: ArgoCDはkindクラスター内でServiceとして動作しているため、
+# kubectl port-forwardでローカルポートに転送するか、
+# NodePort/LoadBalancerとして公開する必要があります
+# ここでは、kind-control-planeコンテナ経由でアクセスを試みます
+[[proxies]]
+name = "argo-http"
+type = "http"
+localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
+localPort = 8080
+# remotePort = 8082
+customDomains = ["kizuna-argo.shiron.dev"]
 
 # Gitea HTTP プロキシ設定 (将来有効にする場合)
 # [[proxies]]

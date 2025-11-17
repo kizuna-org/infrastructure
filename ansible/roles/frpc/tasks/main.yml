@@ -2,21 +2,32 @@
   ansible.builtin.set_fact:
     frpclient_dir: "{{ ansible_env.HOME }}/fclient"
 
-- name: Find all files to copy
+- name: Check if kind network exists
+  ansible.builtin.command:
+    cmd: docker network inspect kind
+  register: kind_network_check
+  changed_when: false
+  failed_when: false
+
+- name: Set kind network exists fact
+  ansible.builtin.set_fact:
+    kind_network_exists: "{{ kind_network_check.rc == 0 }}"
+
+- name: Find all template files
   ansible.builtin.find:
-    paths: "{{ role_path }}/files/frpc"
+    paths: "{{ role_path }}/templates/frpc"
     recurse: yes
     file_type: file
-  register: files_to_copy
+  register: template_files
   delegate_to: localhost
   run_once: true
 
-- name: Copy files individually
-  ansible.builtin.copy:
-    src: "{{ item.path }}"
-    dest: "{{ frpclient_dir }}/{{ item.path | replace(role_path + '/files/frpc/', '') }}"
+- name: Template files individually
+  ansible.builtin.template:
+    src: "{{ item.path | replace(role_path + '/templates/', '') }}"
+    dest: "{{ frpclient_dir }}/{{ item.path | replace(role_path + '/templates/frpc/', '') | regex_replace('\\.j2$', '') }}"
     mode: "0777"
-  loop: "{{ files_to_copy.files }}"
+  loop: "{{ template_files.files }}"
   loop_control:
-    label: "{{ item.path | replace(role_path + '/files/frpc/', '') }}"
+    label: "{{ item.path | replace(role_path + '/templates/frpc/', '') | regex_replace('\\.j2$', '') }}"
   notify: Restart compose
