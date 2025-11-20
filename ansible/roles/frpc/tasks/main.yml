@@ -2,16 +2,28 @@
   ansible.builtin.set_fact:
     frpclient_dir: "{{ ansible_env.HOME }}/fclient"
 
-- name: Check if kind network exists
+- name: List docker networks
   ansible.builtin.command:
-    cmd: docker network inspect kind
-  register: kind_network_check
+    argv:
+      - sudo
+      - docker
+      - network
+      - ls
+      - --format
+      - "{% raw %}{{.Name}}{% endraw %}"
+  register: docker_network_list
   changed_when: false
-  failed_when: false
 
-- name: Set kind network exists fact
+- name: Set kind network facts
   ansible.builtin.set_fact:
-    kind_network_exists: "{{ kind_network_check.rc == 0 }}"
+    kind_network_exists: "{{ kind_network_candidates | length > 0 }}"
+    kind_network_name: "{{ kind_network_candidates | first | default('') }}"
+  vars:
+    kind_network_candidates: "{{ docker_network_list.stdout_lines | select('search', 'kind') | list }}"
+
+- name: Debug kind network facts
+  ansible.builtin.debug:
+    msg: "kind_network_exists: {{ kind_network_exists }}, kind_network_name: {{ kind_network_name }}"
 
 - name: Find all template files
   ansible.builtin.find:

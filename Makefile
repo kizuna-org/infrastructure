@@ -51,7 +51,7 @@ ssh-forward:
 		echo "Error: Please specify PORT variable. Example: make ssh-forward PORT=8080"; \
 		exit 1; \
 	fi
-	@ssh -F "$(SSH_CONFIG)" -l r03i23 -L "$(PORT):localhost:$(PORT)" -N -f "$(SSH_HOST)"
+	@cd $(ANSIBLE_DIR) && ssh -F "../$(SSH_CONFIG)" -l r03i23 -L "$(PORT):localhost:$(PORT)" -N -f "$(SSH_HOST)"
 
 .PHONY: terraform-init
 terraform-init:

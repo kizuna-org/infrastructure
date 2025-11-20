@@ -41,7 +41,7 @@ remotePort = 6000
 
 # Kubernetes API Server TCP プロキシ設定（kindネットワーク経由）
 [[proxies]]
-name = "kube-api-tcp"
+name = "kubecd"
 type = "http"
 localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
 localPort = 6443
@@ -54,10 +54,10 @@ customDomains = ["kizuna-kube.shiron.dev"]
 # NodePort/LoadBalancerとして公開する必要があります
 # ここでは、kind-control-planeコンテナ経由でアクセスを試みます
 [[proxies]]
-name = "argo-http"
+name = "argo"
 type = "http"
 localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
-localPort = 8080
+localPort = 30718
 # remotePort = 8082
 customDomains = ["kizuna-argo.shiron.dev"]
 
