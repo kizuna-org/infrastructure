@@ -4,6 +4,7 @@ ANSIBLE_INVENTORY := inventory.yml
 ANSIBLE_HOST := edu-gpu
 SSH_HOST := edu-gpu
 SSH_CONFIG := $(ANSIBLE_DIR)/ssh_config
+TAGS := all
 
 .PHONY: ansible-ping
 ansible-ping:
@@ -27,7 +28,7 @@ ansible-playbook-apply:
 		echo "Error: Please specify PLAYBOOK variable. Example: make ansible-playbook-apply PLAYBOOK=playbook.yml"; \
 		exit 1; \
 	fi
-	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) $(PLAYBOOK)
+	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) $(PLAYBOOK) --tags $(TAGS)
 
 .PHONY: ansible-adhoc
 ansible-adhoc:

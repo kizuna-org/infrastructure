@@ -2,5 +2,12 @@
   hosts: edu-gpu
   gather_facts: true
   roles:
-    - kind
-    - argocd
+    - role: kind
+      tags:
+        - kind
+    - role: istio
+      tags:
+        - istio
+    - role: argocd
+      tags:
+        - argocd

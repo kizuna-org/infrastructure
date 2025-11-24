@@ -1,0 +1,51 @@
+---
+# ServiceEntry for Kubernetes internal services
+# These should NOT go through the egress gateway
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: kubernetes-internal
+  namespace: istio-system
+spec:
+  hosts:
+{% for domain in no_proxy_domains %}
+    - "{{ domain }}"
+{% endfor %}
+  location: MESH_INTERNAL
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+    - number: 80
+      name: http
+      protocol: HTTP
+    - number: 53
+      name: dns
+      protocol: DNS
+  resolution: DNS
+---
+# Sidecar configuration to keep internal traffic local
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  egress:
+    - hosts:
+        - "istio-system/*"
+        - "kube-system/*"
+        - "./*"
+    - hosts:
+        - "*/*"
+      bind: 0.0.0.0
+  outboundTrafficPolicy:
+    mode: REGISTRY_ONLY
+
+
+
+
+
+
+
+

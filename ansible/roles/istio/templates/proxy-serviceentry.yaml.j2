@@ -1,0 +1,52 @@
+---
+# ServiceEntry for the external HTTP proxy
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-http-proxy
+  namespace: istio-system
+spec:
+  hosts:
+    - {{ proxy_host }}
+  ports:
+    - number: {{ proxy_port }}
+      name: http
+      protocol: HTTP
+  location: MESH_EXTERNAL
+  resolution: DNS
+---
+# ServiceEntry to allow all external HTTP/HTTPS traffic
+# This will route through the egress gateway and then to the proxy
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-services
+  namespace: istio-system
+spec:
+  hosts:
+    - "*.com"
+    - "*.net"
+    - "*.org"
+    - "*.io"
+    - "*.dev"
+    - "*.co.jp"
+    - "*.jp"
+    - "*.edu"
+    - "*.gov"
+  ports:
+    - number: 80
+      name: http
+      protocol: HTTP
+    - number: 443
+      name: https
+      protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: NONE
+
+
+
+
+
+
+
+

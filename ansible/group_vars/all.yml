@@ -1,0 +1,5 @@
+---
+# Shared exposure settings
+kiali_node_port: 32001
+kiali_fclient_domain: "kizuna-kiali.shiron.dev"
+

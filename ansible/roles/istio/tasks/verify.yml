@@ -1,0 +1,211 @@
+---
+# Verification tasks for Istio egress gateway proxy configuration
+- name: Create test pod manifest
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: test-curl
+        namespace: default
+        labels:
+          app: test-curl
+      spec:
+        containers:
+          - name: curl
+            image: curlimages/curl:latest
+            command: ["/bin/sh"]
+            args: ["-c", "sleep 3600"]
+    dest: "{{ resolved_home }}/.cache/istio/manifests/test-pod.yaml"
+    mode: '0644'
+
+- name: Deploy test pod
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/test-pod.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: test_pod_deploy
+  changed_when: "'created' in test_pod_deploy.stdout or 'configured' in test_pod_deploy.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Wait for test pod to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=ready
+      - --timeout=120s
+      - pod/test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+  register: test_pod_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: test_pod_ready.rc == 0
+
+- name: Verify Istio sidecar injection
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - pod
+      - test-curl
+      - -n
+      - default
+      - -o
+      - jsonpath={.spec.containers[*].name}
+      - --context
+      - "{{ kube_context }}"
+  register: sidecar_check
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display sidecar injection status
+  ansible.builtin.debug:
+    msg: "Pod containers: {{ sidecar_check.stdout }} - Sidecar {{ 'is' if 'istio-proxy' in sidecar_check.stdout else 'is NOT' }} injected"
+
+- name: Test external HTTP connectivity through proxy
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - curl
+      - -I
+      - -m
+      - "10"
+      - http://example.com
+  register: curl_test
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display curl test result
+  ansible.builtin.debug:
+    msg:
+      - "Curl test result: {{ 'SUCCESS' if curl_test.rc == 0 else 'FAILED' }}"
+      - "Output: {{ curl_test.stdout }}"
+      - "Error: {{ curl_test.stderr }}"
+
+- name: Check egress gateway logs for traffic
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - logs
+      - -n
+      - istio-system
+      - -l
+      - app=istio-egressgateway
+      - --tail=50
+      - --context
+      - "{{ kube_context }}"
+  register: egress_logs
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display egress gateway logs
+  ansible.builtin.debug:
+    msg: "Recent egress gateway logs:"
+    verbosity: 1
+
+- name: Display egress gateway logs detail
+  ansible.builtin.debug:
+    var: egress_logs.stdout_lines
+    verbosity: 1
+
+- name: Verification summary
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "Istio Egress Gateway Verification Summary"
+      - "=========================================="
+      - "Sidecar injection: {{ 'OK' if 'istio-proxy' in sidecar_check.stdout else 'FAILED' }}"
+      - "External connectivity: {{ 'OK' if curl_test.rc == 0 else 'FAILED' }}"
+      - "Proxy URL: {{ proxy_url }}"
+      - ""
+      - "To manually test:"
+      - "  kubectl exec -n default test-curl -- curl -I http://example.com"
+      - ""
+      - "To view egress gateway logs:"
+      - "  kubectl logs -n istio-system -l app=istio-egressgateway --tail=100"
+      - ""
+      - "To clean up test pod:"
+      - "  kubectl delete pod test-curl -n default"
+
+
+
+
+
+
+
+

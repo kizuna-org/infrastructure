@@ -1,0 +1,1560 @@
+- name: Get user home directory
+  ansible.builtin.command: echo $HOME
+  register: home_dir_result
+  changed_when: false
+  when: ansible_env.HOME is not defined
+
+- name: Resolve user home directory
+  ansible.builtin.set_fact:
+    resolved_home: "{{ ansible_env.HOME | default(home_dir_result.stdout | default('')) }}"
+
+- name: Set istioctl install path
+  ansible.builtin.set_fact:
+    istioctl_path: >-
+      {{
+        istioctl_install_path
+        | default(resolved_home ~ '/.local/bin/istioctl')
+      }}
+
+- name: Get istioctl install directory from path
+  ansible.builtin.set_fact:
+    istioctl_install_dir: "{{ istioctl_path | dirname }}"
+
+- name: Create istioctl install directory
+  ansible.builtin.file:
+    path: "{{ istioctl_install_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Include common proxy environment task
+  ansible.builtin.include_tasks: ../../tasks/build_proxy_env.yml
+  vars:
+    proxy_env_var_name: istio_proxy_env
+    http_proxy_value: "{{ istio_http_proxy | default('') }}"
+    https_proxy_value: "{{ istio_https_proxy | default('') }}"
+    no_proxy_value: "{{ istio_no_proxy | default('') }}"
+    install_dir: "{{ istioctl_install_dir }}"
+
+- name: Display proxy environment
+  ansible.builtin.debug:
+    var: istio_proxy_env
+
+- name: Determine OS and architecture
+  ansible.builtin.set_fact:
+    istio_os: "{{ 'osx' if ansible_system == 'Darwin' else 'linux' }}"
+    istio_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Download istioctl binary
+  ansible.builtin.get_url:
+    url: "https://github.com/istio/istio/releases/download/{{ istio_version }}/istioctl-{{ istio_version }}-{{ istio_os }}-{{ istio_arch }}.tar.gz"
+    dest: "/tmp/istioctl-{{ istio_version }}.tar.gz"
+    mode: '0644'
+  environment: "{{ istio_proxy_env }}"
+
+- name: Extract istioctl binary
+  ansible.builtin.unarchive:
+    src: "/tmp/istioctl-{{ istio_version }}.tar.gz"
+    dest: "{{ istioctl_install_dir }}"
+    remote_src: yes
+    mode: '0755'
+
+- name: Verify istioctl installation
+  ansible.builtin.command: "{{ istioctl_path }} version --remote=false"
+  register: istioctl_version_output
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display istioctl version
+  ansible.builtin.debug:
+    var: istioctl_version_output.stdout
+
+- name: Set kubeconfig path
+  ansible.builtin.set_fact:
+    kubeconfig_path: "{{ resolved_home }}/.kube/config"
+
+- name: Set cluster context
+  ansible.builtin.set_fact:
+    target_cluster_name: "{{ kind_cluster_name | default('kind') }}"
+    kube_context: "kind-{{ kind_cluster_name | default('kind') }}"
+
+- name: Check if Istio is already installed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - namespace
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: istio_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Set Istio installation status
+  ansible.builtin.set_fact:
+    istio_installed: "{{ istio_check.rc == 0 }}"
+
+- name: Display Istio installation status
+  ansible.builtin.debug:
+    msg: "Istio is {{ 'already installed' if istio_installed else 'not installed' }}"
+
+- name: Create temporary manifest directory
+  ansible.builtin.file:
+    path: "{{ resolved_home }}/.cache/istio/manifests"
+    state: directory
+    mode: '0755'
+  when: not istio_installed
+
+- name: Generate Istio installation manifest
+  ansible.builtin.command:
+    argv:
+      - "{{ istioctl_path }}"
+      - manifest
+      - generate
+      - --set
+      - profile={{ istio_profile }}
+      - --set
+      - components.egressGateways[0].name=istio-egressgateway
+      - --set
+      - components.egressGateways[0].enabled=true
+      - --set
+      - meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY
+  register: istio_manifest
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: not istio_installed
+
+- name: Save Istio manifest to file
+  ansible.builtin.copy:
+    content: "{{ istio_manifest.stdout }}"
+    dest: "{{ resolved_home }}/.cache/istio/manifests/istio-install.yaml"
+    mode: '0644'
+  when: not istio_installed
+
+- name: Ensure Istio namespace exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - create
+      - namespace
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: istio_namespace_result
+  changed_when: "'created' in istio_namespace_result.stdout"
+  failed_when:
+    - istio_namespace_result.rc != 0
+    - "'AlreadyExists' not in istio_namespace_result.stderr"
+  environment: "{{ istio_proxy_env }}"
+  when: not istio_installed
+
+- name: Apply Istio installation manifest
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/istio-install.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: istio_install_result
+  changed_when: "'created' in istio_install_result.stdout or 'configured' in istio_install_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  when: not istio_installed
+
+- name: Display Istio installation result
+  ansible.builtin.debug:
+    var: istio_install_result.stdout_lines
+  when: not istio_installed and istio_install_result.changed
+
+- name: Wait for Istio control plane to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=available
+      - --timeout=300s
+      - deployment/istiod
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: istio_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: istio_ready.rc == 0
+
+- name: Wait for Istio egress gateway to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=available
+      - --timeout=300s
+      - deployment/istio-egressgateway
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: egress_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: egress_ready.rc == 0
+
+- name: Generate egress gateway configuration
+  ansible.builtin.template:
+    src: egress-gateway.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway.yaml"
+    mode: '0644'
+
+- name: Generate proxy ServiceEntry configuration
+  ansible.builtin.template:
+    src: proxy-serviceentry.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/proxy-serviceentry.yaml"
+    mode: '0644'
+
+- name: Generate internal ServiceEntry configuration
+  ansible.builtin.template:
+    src: internal-serviceentry.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/internal-serviceentry.yaml"
+    mode: '0644'
+
+- name: Apply egress gateway configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/egress-gateway.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: egress_config_result
+  changed_when: "'created' in egress_config_result.stdout or 'configured' in egress_config_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Apply proxy ServiceEntry configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/proxy-serviceentry.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: proxy_se_result
+  changed_when: "'created' in proxy_se_result.stdout or 'configured' in proxy_se_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Apply internal ServiceEntry configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/internal-serviceentry.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: internal_se_result
+  changed_when: "'created' in internal_se_result.stdout or 'configured' in internal_se_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Enable Istio injection for default namespace
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - namespace
+      - default
+      - istio-injection=enabled
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: injection_result
+  changed_when: "'labeled' in injection_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Enable Istio injection for argocd namespace
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - namespace
+      - argocd
+      - istio-injection=enabled
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: injection_argocd_result
+  changed_when: "'labeled' in injection_argocd_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  failed_when: false
+
+- name: Ensure manifest directory exists for argocd sidecar
+  ansible.builtin.file:
+    path: "{{ resolved_home }}/.cache/istio/manifests"
+    state: directory
+    mode: '0755'
+
+- name: Set argocd sidecar manifest path
+  ansible.builtin.set_fact:
+    argocd_sidecar_manifest_path: "{{ resolved_home }}/.cache/istio/manifests/argocd-sidecar.yaml"
+
+- name: Render argocd Sidecar configuration
+  ansible.builtin.template:
+    src: argocd-sidecar.yaml.j2
+    dest: "{{ argocd_sidecar_manifest_path }}"
+    mode: '0644'
+  register: argocd_sidecar_template
+
+- name: Create Sidecar configuration for argocd namespace to allow Kubernetes API access
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/argocd-sidecar.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_sidecar_result
+  changed_when: "'created' in argocd_sidecar_result.stdout or 'configured' in argocd_sidecar_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Enable Istio injection for kube-system namespace
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - namespace
+      - kube-system
+      - istio-injection=enabled
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: injection_kube_system_result
+  changed_when: "'labeled' in injection_kube_system_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  failed_when: false
+
+- name: Label argocd services for Kiali application recognition
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - service
+      - "{{ item }}"
+      - -n
+      - argocd
+      - app={{ item | regex_replace('^argocd-', '') }}
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_service_label_result
+  changed_when: "'labeled' in argocd_service_label_result.stdout"
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  loop:
+    - argocd-server
+    - argocd-repo-server
+    - argocd-dex-server
+    - argocd-redis
+    - argocd-notifications-controller
+    - argocd-applicationset-controller
+  ignore_errors: true
+
+- name: Label argocd application-controller service for Kiali
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - service
+      - argocd-application-controller
+      - -n
+      - argocd
+      - app=application-controller
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_app_controller_label_result
+  changed_when: "'labeled' in argocd_app_controller_label_result.stdout"
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  ignore_errors: true
+
+- name: Label argocd deployments for Kiali application recognition
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - deployment
+      - "{{ item }}"
+      - -n
+      - argocd
+      - app={{ item | regex_replace('^argocd-', '') }}
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_deployment_label_result
+  changed_when: "'labeled' in argocd_deployment_label_result.stdout"
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  loop:
+    - argocd-server
+    - argocd-repo-server
+    - argocd-dex-server
+    - argocd-redis
+    - argocd-notifications-controller
+    - argocd-applicationset-controller
+  ignore_errors: true
+
+- name: Add app and version labels to argocd deployment pod templates
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - deployment
+      - "{{ item }}"
+      - -n
+      - argocd
+      - --type
+      - merge
+      - -p
+      - >-
+        {
+          "spec": {
+            "template": {
+              "metadata": {
+                "labels": {
+                  "app": "{{ item | regex_replace('^argocd-', '') }}",
+                  "version": "v1"
+                }
+              }
+            }
+          }
+        }
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_deployment_template_label_result
+  changed_when: >
+    (argocd_deployment_template_label_result.stdout is defined) and
+    ('patched' in argocd_deployment_template_label_result.stdout or 'unchanged' not in argocd_deployment_template_label_result.stdout)
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  loop:
+    - argocd-server
+    - argocd-repo-server
+    - argocd-dex-server
+    - argocd-redis
+    - argocd-notifications-controller
+    - argocd-applicationset-controller
+  ignore_errors: true
+
+- name: Label argocd application-controller statefulset for Kiali
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - label
+      - statefulset
+      - argocd-application-controller
+      - -n
+      - argocd
+      - app=application-controller
+      - --overwrite
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_app_controller_sts_label_result
+  changed_when: "'labeled' in argocd_app_controller_sts_label_result.stdout"
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  ignore_errors: true
+
+- name: Add app and version labels to argocd application-controller statefulset pod template
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - statefulset
+      - argocd-application-controller
+      - -n
+      - argocd
+      - --type
+      - merge
+      - -p
+      - >-
+        {
+          "spec": {
+            "template": {
+              "metadata": {
+                "labels": {
+                  "app": "application-controller",
+                  "version": "v1"
+                }
+              }
+            }
+          }
+        }
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_sts_template_label_result
+  changed_when: >
+    (argocd_sts_template_label_result.stdout is defined) and
+    ('patched' in argocd_sts_template_label_result.stdout or 'unchanged' not in argocd_sts_template_label_result.stdout)
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  ignore_errors: true
+
+- name: Check if argocd-server needs sidecar injection disabled
+  ansible.builtin.set_fact:
+    argocd_disable_sidecar_injection: "{{ argocd_disable_sidecar_injection | default(false) }}"
+
+- name: Disable Istio sidecar injection for argocd-server if needed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - deployment
+      - argocd-server
+      - -n
+      - argocd
+      - --type
+      - merge
+      - -p
+      - >-
+        {
+          "spec": {
+            "template": {
+              "metadata": {
+                "annotations": {
+                  "sidecar.istio.io/inject": "false"
+                }
+              }
+            }
+          }
+        }
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_server_sidecar_disable_result
+  changed_when: >
+    (argocd_server_sidecar_disable_result.stdout is defined) and
+    ('patched' in argocd_server_sidecar_disable_result.stdout or 'unchanged' not in argocd_server_sidecar_disable_result.stdout)
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  ignore_errors: true
+  when: argocd_disable_sidecar_injection | default(false)
+
+- name: Disable Istio sidecar injection for argocd-application-controller if needed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - statefulset
+      - argocd-application-controller
+      - -n
+      - argocd
+      - --type
+      - merge
+      - -p
+      - >-
+        {
+          "spec": {
+            "template": {
+              "metadata": {
+                "annotations": {
+                  "sidecar.istio.io/inject": "false"
+                }
+              }
+            }
+          }
+        }
+      - --context
+      - "{{ kube_context }}"
+  register: argocd_app_controller_sidecar_disable_result
+  changed_when: >
+    (argocd_app_controller_sidecar_disable_result.stdout is defined) and
+    ('patched' in argocd_app_controller_sidecar_disable_result.stdout or 'unchanged' not in argocd_app_controller_sidecar_disable_result.stdout)
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  ignore_errors: true
+  when: argocd_disable_sidecar_injection | default(false)
+
+- name: Display Istio configuration summary
+  ansible.builtin.debug:
+    msg:
+      - "Istio has been successfully configured"
+      - "Egress gateway is routing all external traffic through: {{ proxy_url }}"
+      - "Istio injection enabled for: default, argocd, kube-system namespaces"
+      - "Outbound traffic policy: REGISTRY_ONLY (only allowed destinations can be reached)"
+
+- name: Set Prometheus manifest path
+  ansible.builtin.set_fact:
+    istio_prometheus_manifest_path: "{{ resolved_home }}/.cache/istio/manifests/prometheus.yaml"
+  when: istio_install_prometheus_addon | default(true)
+
+- name: Check if Prometheus service exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - service
+      - prometheus
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: prometheus_service_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: istio_install_prometheus_addon | default(true)
+
+- name: Determine Prometheus installation status
+  ansible.builtin.set_fact:
+    prometheus_installed: "{{ prometheus_service_check.rc == 0 }}"
+  when: istio_install_prometheus_addon | default(true)
+
+- name: Ensure manifest cache directory exists for Prometheus
+  ansible.builtin.file:
+    path: "{{ resolved_home }}/.cache/istio/manifests"
+    state: directory
+    mode: '0755'
+  when:
+    - istio_install_prometheus_addon | default(true)
+    - not (prometheus_installed | default(false))
+
+- name: Download Prometheus addon manifest
+  ansible.builtin.get_url:
+    url: "{{ istio_prometheus_manifest_url | default('https://raw.githubusercontent.com/istio/istio/' ~ istio_version ~ '/samples/addons/prometheus.yaml') }}"
+    dest: "{{ istio_prometheus_manifest_path }}"
+    mode: '0644'
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_install_prometheus_addon | default(true)
+    - not (prometheus_installed | default(false))
+
+- name: Apply Prometheus addon manifest
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - "/manifests/{{ istio_prometheus_manifest_path | basename }}"
+      - --context
+      - "{{ kube_context }}"
+  register: prometheus_install_result
+  changed_when: "'created' in prometheus_install_result.stdout or 'configured' in prometheus_install_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_install_prometheus_addon | default(true)
+    - not (prometheus_installed | default(false))
+
+- name: Check if Kiali operator namespace exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - namespace
+      - kiali-operator
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_namespace_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: kiali_enabled | default(true)
+
+- name: Check if Kiali CRD exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - crd
+      - kialis.kiali.io
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_existing_crd_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: kiali_enabled | default(true)
+
+- name: Check if Kiali deployment exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - deployment
+      - kiali
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_existing_deployment_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: kiali_enabled | default(true)
+
+- name: Aggregate Kiali installation status
+  ansible.builtin.set_fact:
+    kiali_operator_namespace_exists: "{{ kiali_namespace_check.rc == 0 }}"
+    kiali_crd_exists: "{{ kiali_existing_crd_check.rc == 0 }}"
+    kiali_deployment_exists: "{{ kiali_existing_deployment_check.rc == 0 }}"
+    kiali_installed: >-
+      {{
+        (kiali_namespace_check.rc == 0)
+        and (kiali_existing_crd_check.rc == 0)
+        and (kiali_existing_deployment_check.rc == 0)
+      }}
+  when: kiali_enabled | default(true)
+
+- name: Determine if Kiali installation should run
+  ansible.builtin.set_fact:
+    kiali_install_required: >-
+      {{
+        (kiali_force_install | default(false))
+        or
+        (not (kiali_installed | default(false)))
+      }}
+  when: kiali_enabled | default(true)
+
+- name: Display Kiali installation status
+  ansible.builtin.debug:
+    msg:
+      - "Kiali operator namespace present: {{ kiali_operator_namespace_exists | default(false) }}"
+      - "Kiali CRD present: {{ kiali_crd_exists | default(false) }}"
+      - "Kiali deployment present: {{ kiali_deployment_exists | default(false) }}"
+      - "Kiali installed: {{ kiali_installed | default(false) }}"
+      - "Kiali install required (force={{ kiali_force_install | default(false) }}): {{ kiali_install_required | default(false) }}"
+  when: kiali_enabled | default(true)
+
+- name: Set Helm install path
+  ansible.builtin.set_fact:
+    helm_path: >-
+      {{
+        helm_install_path
+        | default(resolved_home ~ '/.local/bin/helm')
+      }}
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Get Helm install directory from path
+  ansible.builtin.set_fact:
+    helm_install_dir: "{{ helm_path | dirname }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Create Helm install directory
+  ansible.builtin.file:
+    path: "{{ helm_install_dir }}"
+    state: directory
+    mode: '0755'
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Check if Helm is installed
+  ansible.builtin.command: "{{ helm_path }} version --client"
+  register: helm_check
+  changed_when: false
+  failed_when: false
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Set Helm installation status
+  ansible.builtin.set_fact:
+    helm_installed: "{{ helm_check.rc == 0 }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Determine OS and architecture for Helm
+  ansible.builtin.set_fact:
+    helm_os: "{{ 'darwin' if ansible_system == 'Darwin' else 'linux' }}"
+    helm_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+    - not (helm_installed | default(false))
+
+- name: Download Helm binary
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-v3.14.0-{{ helm_os }}-{{ helm_arch }}.tar.gz"
+    dest: "/tmp/helm-v3.14.0.tar.gz"
+    mode: '0644'
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+    - not (helm_installed | default(false))
+
+- name: Extract Helm binary
+  ansible.builtin.unarchive:
+    src: "/tmp/helm-v3.14.0.tar.gz"
+    dest: "/tmp"
+    remote_src: yes
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+    - not (helm_installed | default(false))
+
+- name: Install Helm binary
+  ansible.builtin.copy:
+    src: "/tmp/{{ helm_os }}-{{ helm_arch }}/helm"
+    dest: "{{ helm_path }}"
+    mode: '0755'
+    remote_src: yes
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+    - not (helm_installed | default(false))
+
+- name: Verify Helm installation
+  ansible.builtin.command: "{{ helm_path }} version --client"
+  register: helm_version_output
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Display Helm version
+  ansible.builtin.debug:
+    var: helm_version_output.stdout
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Add Kiali Helm repository
+  ansible.builtin.shell: |
+    {{ helm_path }} repo add kiali https://kiali.org/helm-charts
+  environment: "{{ istio_proxy_env }}"
+  changed_when: false
+  failed_when: false
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Update Helm repositories
+  ansible.builtin.shell: |
+    {{ helm_path }} repo update
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Generate Kiali operator manifest from Helm chart
+  ansible.builtin.shell: |
+    {{ helm_path }} template kiali-operator kiali/kiali-operator \
+      --include-crds \
+      --version {{ kiali_version }} \
+      --namespace kiali-operator \
+      --set cr.create=false
+  environment: "{{ istio_proxy_env }}"
+  register: kiali_operator_manifest
+  changed_when: false
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Save Kiali operator manifest to file
+  ansible.builtin.copy:
+    content: "{{ kiali_operator_manifest.stdout }}"
+    dest: "{{ resolved_home }}/.cache/istio/manifests/kiali-operator.yaml"
+    mode: '0644'
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Ensure Kiali operator namespace exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - create
+      - namespace
+      - kiali-operator
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_namespace_result
+  changed_when: "'created' in kiali_namespace_result.stdout"
+  failed_when:
+    - kiali_namespace_result.rc != 0
+    - "'AlreadyExists' not in kiali_namespace_result.stderr"
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Apply Kiali operator manifest
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/kiali-operator.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_operator_result
+  changed_when: "'created' in kiali_operator_result.stdout or 'configured' in kiali_operator_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Wait for Kiali operator to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=available
+      - --timeout=300s
+      - deployment/kiali-operator
+      - -n
+      - kiali-operator
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_operator_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: kiali_operator_ready.rc == 0
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Wait for Kiali CRD to be registered
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - crd
+      - kialis.kiali.io
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_crd_check
+  changed_when: false
+  retries: 10
+  delay: 6
+  until: kiali_crd_check.rc == 0
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Generate Kiali CR manifest
+  ansible.builtin.template:
+    src: kiali-cr.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/kiali-cr.yaml"
+    mode: '0644'
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Apply Kiali CR manifest
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/kiali-cr.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_cr_result
+  changed_when: "'created' in kiali_cr_result.stdout or 'configured' in kiali_cr_result.stdout"
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Wait for Kiali to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=available
+      - --timeout=300s
+      - deployment/kiali
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: kiali_ready.rc == 0
+  when:
+    - kiali_enabled | default(true)
+    - kiali_install_required | default(false)
+
+- name: Get current Kiali service definition
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - service
+      - kiali
+      - -n
+      - istio-system
+      - -o
+      - json
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_service_definition
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 5
+  delay: 5
+  until: >
+    kiali_service_definition.rc == 0
+    or
+    (
+      'NotFound'
+      in (kiali_service_definition.stderr | default(''))
+    )
+  when: kiali_enabled | default(true)
+
+- name: Parse current Kiali service definition
+  ansible.builtin.set_fact:
+    kiali_service_data: "{{ kiali_service_definition.stdout | from_json }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_definition.rc == 0
+    - (kiali_service_definition.stdout | default('')) | length > 0
+
+- name: Extract current Kiali service exposure state
+  ansible.builtin.set_fact:
+    kiali_current_service_type: "{{ kiali_service_data.spec.type | default('') }}"
+    kiali_current_nodeport: >-
+      {{
+        (
+          kiali_service_data.spec.ports
+          | default([])
+          | selectattr('port', 'equalto', kiali_port | default(20001) | int)
+          | map(attribute='nodePort')
+          | list
+        )
+        | first
+        | default('')
+      }}
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_data is defined
+
+- name: Ensure Kiali service is exposed via NodePort for fclient
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - service
+      - kiali
+      - -n
+      - istio-system
+      - --type
+      - merge
+      - -p
+      - >-
+        {{
+          {
+            'spec': {
+              'type': 'NodePort',
+              'ports': [
+                {
+                  'port': kiali_port | default(20001) | int,
+                  'targetPort': kiali_port | default(20001) | int,
+                  'nodePort': kiali_node_port | default(32001) | int,
+                  'name': 'http'
+                }
+              ]
+            }
+          } | to_json
+        }}
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_service_patch
+  changed_when: >
+    (kiali_service_patch.stdout is defined)
+    and
+    ('patched' in kiali_service_patch.stdout)
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_data is defined
+    - >
+      (
+        kiali_current_service_type | default('') | lower
+        != 'nodeport'
+      )
+      or
+      (
+        kiali_current_nodeport | string
+        != (kiali_node_port | default(32001) | string)
+      )
+
+- name: Refresh Kiali service definition after exposure update
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - service
+      - kiali
+      - -n
+      - istio-system
+      - -o
+      - json
+      - --context
+      - "{{ kube_context }}"
+  register: kiali_service_definition_latest
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_data is defined
+
+- name: Update Kiali service facts after exposure update
+  ansible.builtin.set_fact:
+    kiali_service_data: "{{ kiali_service_definition_latest.stdout | from_json }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_definition_latest is defined
+    - (kiali_service_definition_latest.rc | default(1)) == 0
+    - (kiali_service_definition_latest.stdout | default('')) | length > 0
+
+- name: Record final Kiali NodePort
+  ansible.builtin.set_fact:
+    kiali_effective_nodeport: >-
+      {{
+        (
+          (kiali_service_data | default({})).spec.ports
+          | default([])
+          | selectattr('port', 'equalto', kiali_port | default(20001) | int)
+          | map(attribute='nodePort')
+          | list
+        )
+        | first
+        | default(kiali_node_port | default(32001))
+      }}
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_data is defined
+
+- name: Set fallback Kiali NodePort when service data is unavailable
+  ansible.builtin.set_fact:
+    kiali_effective_nodeport: "{{ kiali_node_port | default(32001) }}"
+  when:
+    - kiali_enabled | default(true)
+    - kiali_service_data is not defined
+
+- name: Display Kiali installation summary
+  ansible.builtin.debug:
+    msg:
+      - "Kiali has been successfully installed"
+      - "Local access: kubectl port-forward -n istio-system svc/kiali 20001:20001 → http://localhost:20001/kiali"
+      - >-
+        fclient access: https://{{ kiali_fclient_domain | default('kizuna-kiali.shiron.dev') }}/kiali
+        (NodePort {{ kiali_effective_nodeport | default(kiali_node_port | default(32001)) }})
+  when: kiali_enabled | default(true)
+
+- name: Run verification tasks
+  ansible.builtin.include_tasks: verify.yml
+  when: istio_verify | default(true)

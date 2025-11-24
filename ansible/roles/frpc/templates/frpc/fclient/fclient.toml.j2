@@ -61,6 +61,14 @@ localPort = 30718
 # remotePort = 8082
 customDomains = ["kizuna-argo.shiron.dev"]
 
+# Kiali HTTP プロキシ設定（kindネットワーク経由）
+[[proxies]]
+name = "kiali"
+type = "http"
+localIP = "{{ kind_cluster_name | default('kind') }}-control-plane"
+localPort = {{ kiali_node_port | default(32001) }}
+customDomains = ["{{ kiali_fclient_domain | default('kizuna-kiali.shiron.dev') }}"]
+
 # Gitea HTTP プロキシ設定 (将来有効にする場合)
 # [[proxies]]
 # name = "gitea-http"

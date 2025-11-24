@@ -1,0 +1,17 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  egress:
+    - hosts:
+        - "istio-system/*"
+        - "kube-system/*"
+        - "./*"
+        - "kubernetes.default.svc.cluster.local"
+    - hosts:
+        - "*/*"
+  outboundTrafficPolicy:
+    mode: ALLOW_ANY
+
