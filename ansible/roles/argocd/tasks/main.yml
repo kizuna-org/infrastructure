@@ -110,6 +110,54 @@
   environment: "{{ argocd_proxy_env }}"
   when: install_argocd
 
+- name: Initialise ArgoCD proxy CLI environment args
+  ansible.builtin.set_fact:
+    argocd_proxy_env_cli_args: []
+  when: install_argocd
+
+- name: Collect ArgoCD proxy CLI environment args
+  ansible.builtin.set_fact:
+    argocd_proxy_env_cli_args: "{{ argocd_proxy_env_cli_args + [item.key ~ '=' ~ item.value | string] }}"
+  loop: "{{ argocd_proxy_env | dict2items | list }}"
+  when:
+    - install_argocd
+    - item.key in proxy_env_keys
+    - item.value is defined
+    - (item.value | string | length) > 0
+  vars:
+    proxy_env_keys:
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY
+      - http_proxy
+      - https_proxy
+      - no_proxy
+
+- name: Define ArgoCD workloads requiring proxy settings
+  ansible.builtin.set_fact:
+    argocd_proxy_workloads:
+      - {resource: 'deployment/argocd-server', container: 'argocd-server'}
+      - {resource: 'deployment/argocd-repo-server', container: 'argocd-repo-server'}
+      - {resource: 'deployment/argocd-applicationset-controller', container: 'argocd-applicationset-controller'}
+      - {resource: 'deployment/argocd-notifications-controller', container: 'argocd-notifications-controller'}
+      - {resource: 'statefulset/argocd-application-controller', container: 'argocd-application-controller'}
+  when: install_argocd
+
+- name: Apply proxy environment variables to ArgoCD workloads
+  ansible.builtin.command:
+    argv: "{{ base_set_env_cmd + container_args + argocd_proxy_env_cli_args }}"
+  loop: "{{ argocd_proxy_workloads | default([]) }}"
+  register: argocd_proxy_set_env
+  changed_when: >
+    (argocd_proxy_set_env.stdout is defined)
+    and ('env updated' in argocd_proxy_set_env.stdout)
+  when:
+    - install_argocd
+    - (argocd_proxy_env_cli_args | default([])) | length > 0
+  vars:
+    base_set_env_cmd: "{{ kubectl_base_command + ['set', 'env', item.resource, '-n', 'argocd'] }}"
+    container_args: "{{ ['--containers', item.container] if item.container | default('') | length > 0 else [] }}"
+
 - name: Wait for ArgoCD deployments to become available
   ansible.builtin.command:
     argv: "{{ kubectl_base_command + ['wait', '--for=condition=Available', '--namespace', 'argocd', 'deployment', '--all', '--timeout=600s'] }}"

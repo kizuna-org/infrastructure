@@ -2,7 +2,12 @@
   hosts: snct-proxy-srv.shiron.dev
   gather_facts: true
   roles:
-    - frp
+    - role: frp
+      tags:
+        - frp
+    - role: ocserv
+      tags:
+        - ocserv
 
 - name: Deploy frp client
   hosts: edu-gpu-2
