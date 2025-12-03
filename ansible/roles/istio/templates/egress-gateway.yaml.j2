@@ -24,7 +24,7 @@ spec:
       tls:
         mode: PASSTHROUGH
 ---
-# VirtualService to route all external HTTP/HTTPS traffic through the proxy
+# VirtualService to route all external HTTP/HTTPS traffic through the egress gateway
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -57,15 +57,19 @@ spec:
             port:
               number: 443
           weight: 100
+    # NOTE:
+    #   - egressgateway 側の Tailscale sidecar を通過した後は、通常のネットワークルーティングに従い
+    #     インターネット / 社内サービスへ到達します。
+    #   - ここではアプリケーションレベルの HTTP プロキシは介さず、L4 レベルのルーティングのみを行います。
     - match:
         - gateways:
             - istio-egressgateway
           port: 80
       route:
         - destination:
-            host: {{ proxy_host }}
+            host: istio-egressgateway.istio-system.svc.cluster.local
             port:
-              number: {{ proxy_port }}
+              number: 80
           weight: 100
     - match:
         - gateways:
@@ -73,9 +77,9 @@ spec:
           port: 443
       route:
         - destination:
-            host: {{ proxy_host }}
+            host: istio-egressgateway.istio-system.svc.cluster.local
             port:
-              number: {{ proxy_port }}
+              number: 443
           weight: 100
   tcp:
     - match:
@@ -94,9 +98,9 @@ spec:
           port: 443
       route:
         - destination:
-            host: {{ proxy_host }}
+            host: istio-egressgateway.istio-system.svc.cluster.local
             port:
-              number: {{ proxy_port }}
+              number: 443
           weight: 100
 ---
 # DestinationRule for the egress gateway
@@ -107,18 +111,6 @@ metadata:
   namespace: istio-system
 spec:
   host: istio-egressgateway.istio-system.svc.cluster.local
-  trafficPolicy:
-    tls:
-      mode: DISABLE
----
-# DestinationRule for external proxy
-apiVersion: networking.istio.io/v1beta1
-kind: DestinationRule
-metadata:
-  name: external-proxy
-  namespace: istio-system
-spec:
-  host: {{ proxy_host }}
   trafficPolicy:
     tls:
       mode: DISABLE

@@ -6,6 +6,7 @@
       tags:
         - frp
     - role: ocserv
+      when: ocserv_enabled | default(false)
       tags:
         - ocserv
 

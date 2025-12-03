@@ -1,6 +1,6 @@
 ---
 # ServiceEntry for Kubernetes internal services
-# These should NOT go through the egress gateway
+# These should NOT go through the egress gateway (Tailscale)
 apiVersion: networking.istio.io/v1beta1
 kind: ServiceEntry
 metadata:
@@ -41,6 +41,13 @@ spec:
       bind: 0.0.0.0
   outboundTrafficPolicy:
     mode: REGISTRY_ONLY
+
+
+
+
+
+
+
 
 
 

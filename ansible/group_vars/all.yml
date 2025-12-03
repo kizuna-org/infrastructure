@@ -1,5 +1,17 @@
 ---
+# Legacy VPN stack (ocserv) is disabled now that Istio egress uses Tailscale
+ocserv_enabled: false
+
 # Shared exposure settings
 kiali_node_port: 32001
 kiali_fclient_domain: "kizuna-kiali.shiron.dev"
+
+
+
+
+
+
+
+
+
 

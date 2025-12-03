@@ -1,0 +1,55 @@
+---
+# Patch for Istio Egress Gateway to add Tailscale VPN sidecar
+# This enables all egress traffic to route through a Tailscale client inside the pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-egressgateway
+  namespace: istio-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: tailscale-vpn
+          image: "{{ tailscale_image }}"
+          imagePullPolicy: "{{ tailscale_image_pull_policy | default('IfNotPresent') }}"
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - NET_ADMIN
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  # 実運用では Secret から参照することを推奨
+                  # ここでは値が未設定の場合に備えて default を残している
+                  name: "{{ tailscale_k8s_secret_name | default('tailscale-egress-auth') }}"
+                  key: authkey
+            - name: TS_HOSTNAME
+              value: "{{ tailscale_hostname }}"
+            - name: TS_STATE_DIR
+              value: "{{ tailscale_state_dir }}"
+            - name: TS_EXTRA_ARGS
+              value: "{{ tailscale_extra_args }}"
+          volumeMounts:
+            - name: dev-net-tun
+              mountPath: /dev/net/tun
+            - name: tailscale-state
+              mountPath: "{{ tailscale_state_dir }}"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+      volumes:
+        - name: dev-net-tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+          # NOTE: Kubernetes ノード側で /dev/net/tun が利用可能であることが前提
+        - name: tailscale-state
+          emptyDir: {}
+      shareProcessNamespace: true

@@ -1,22 +1,8 @@
 ---
-# ServiceEntry for the external HTTP proxy
-apiVersion: networking.istio.io/v1beta1
-kind: ServiceEntry
-metadata:
-  name: external-http-proxy
-  namespace: istio-system
-spec:
-  hosts:
-    - {{ proxy_host }}
-  ports:
-    - number: {{ proxy_port }}
-      name: http
-      protocol: HTTP
-  location: MESH_EXTERNAL
-  resolution: DNS
----
 # ServiceEntry to allow all external HTTP/HTTPS traffic
-# This will route through the egress gateway and then to the proxy
+# NOTE:
+#   - ここで定義する外部ホストは、Istio egress gateway 経由で Tailscale Pod を通って外部に到達します。
+#   - アプリケーションレベルの HTTP プロキシは利用せず、Tailscale ネットワークを経由した L4 ルーティングのみを行います。
 apiVersion: networking.istio.io/v1beta1
 kind: ServiceEntry
 metadata:
@@ -42,6 +28,13 @@ spec:
       protocol: HTTPS
   location: MESH_EXTERNAL
   resolution: NONE
+
+
+
+
+
+
+
 
 
 

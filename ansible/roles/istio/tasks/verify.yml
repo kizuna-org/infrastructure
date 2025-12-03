@@ -146,6 +146,168 @@
       - "Output: {{ curl_test.stdout }}"
       - "Error: {{ curl_test.stderr }}"
 
+- name: Test Tailscale-only endpoint from workload (optional)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - curl
+      - -I
+      - -m
+      - "15"
+      - "{{ tailscale_verification_target }}"
+  register: tailscale_target_curl
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: (tailscale_verification_target | default('')) | length > 0
+
+- name: Display Tailscale-only curl result
+  ansible.builtin.debug:
+    msg:
+      - "Tailscale target test: {{ 'SUCCESS' if tailscale_target_curl.rc == 0 else 'FAILED' }}"
+      - "Target: {{ tailscale_verification_target }}"
+      - "Output: {{ tailscale_target_curl.stdout }}"
+      - "Error: {{ tailscale_target_curl.stderr }}"
+  when:
+    - tailscale_target_curl is defined
+
+- name: Discover istio-egressgateway pod for Tailscale status
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - pod
+      - -n
+      - istio-system
+      - -l
+      - app=istio-egressgateway
+      - -o
+      - jsonpath={.items[0].metadata.name}
+      - --context
+      - "{{ kube_context }}"
+  register: tailscale_egress_pod_lookup
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Record istio-egressgateway pod name
+  ansible.builtin.set_fact:
+    tailscale_egress_pod_name: "{{ tailscale_egress_pod_lookup.stdout | default('') | trim }}"
+  when:
+    - tailscale_egress_pod_lookup.stdout | default('') | length > 0
+
+- name: Check tailscale status inside egress gateway
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - "{{ tailscale_egress_pod_name }}"
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - tailscale
+      - status
+      - --active
+  register: tailscale_status_result
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - tailscale_egress_pod_name is defined
+    - tailscale_egress_pod_name | length > 0
+
+- name: Display tailscale status summary
+  ansible.builtin.debug:
+    msg:
+      - "tailscale status output:"
+      - "{{ tailscale_status_result.stdout }}"
+  when: tailscale_status_result is defined
+
+- name: Check tailscale ping to control plane (optional)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - "{{ tailscale_egress_pod_name }}"
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - tailscale
+      - ping
+      - --c=3
+      - "{{ tailscale_verification_target }}"
+  register: tailscale_ping_result
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - tailscale_egress_pod_name is defined
+    - tailscale_egress_pod_name | length > 0
+    - (tailscale_verification_target | default('')) | length > 0
+
+- name: Display tailscale ping result
+  ansible.builtin.debug:
+    msg:
+      - "tailscale ping result: {{ 'SUCCESS' if tailscale_ping_result.rc == 0 else 'FAILED' }}"
+      - "Output: {{ tailscale_ping_result.stdout }}"
+      - "Error: {{ tailscale_ping_result.stderr }}"
+  when: tailscale_ping_result is defined
+
 - name: Check egress gateway logs for traffic
   ansible.builtin.command:
     argv:
@@ -191,6 +353,20 @@
       - "=========================================="
       - "Sidecar injection: {{ 'OK' if 'istio-proxy' in sidecar_check.stdout else 'FAILED' }}"
       - "External connectivity: {{ 'OK' if curl_test.rc == 0 else 'FAILED' }}"
+      - >-
+        Tailscale-only connectivity ({{
+          tailscale_verification_target | default('not configured')
+        }}): {{
+          'OK'
+          if (tailscale_target_curl is defined and tailscale_target_curl.rc == 0)
+          else 'SKIPPED'
+        }}
+      - >-
+        tailscale status check: {{
+          'OK'
+          if (tailscale_status_result is defined and tailscale_status_result.rc == 0)
+          else 'SKIPPED'
+        }}
       - "Proxy URL: {{ proxy_url }}"
       - ""
       - "To manually test:"
@@ -201,6 +377,9 @@
       - ""
       - "To clean up test pod:"
       - "  kubectl delete pod test-curl -n default"
+
+
+
 
 
 
