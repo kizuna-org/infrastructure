@@ -26,10 +26,6 @@
     state: directory
     mode: '0755'
 
-- name: Load VPN variables from vars/main/main.yml
-  ansible.builtin.include_tasks: load_vars.yml
-  when: istio_egress_vpn_enabled | default(false)
-
 - name: Include common proxy environment task
   ansible.builtin.include_tasks: ../../tasks/build_proxy_env.yml
   vars:
@@ -1000,8 +996,6 @@
   register: argocd_sidecar_result
   changed_when: "'created' in argocd_sidecar_result.stdout or 'configured' in argocd_sidecar_result.stdout"
   environment: "{{ istio_proxy_env }}"
-
-
 
 - name: Label argocd services for Kiali application recognition
   ansible.builtin.command:
