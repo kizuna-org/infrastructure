@@ -1,0 +1,47 @@
+---
+- name: Check if Tailscale is installed
+  command: tailscale --version
+  register: tailscale_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Tailscale
+  shell: curl -fsSL https://tailscale.com/install.sh | sh
+  become: true
+  when: tailscale_check.rc != 0
+
+- name: Enable IPv4 forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+  become: true
+
+- name: Enable IPv6 forwarding
+  sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+  become: true
+
+- name: Check if Tailscale is logged in
+  command: tailscale status
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+- name: Connect to Tailnet as Exit Node
+  command: >
+    tailscale up
+    --authkey={{ proxy_tailscale_auth_key | default('') }}
+    --advertise-exit-node
+    --hostname={{ tailscale_hostname | default(inventory_hostname) }}
+    --ssh
+  become: true
+  
+  notify: Restart tailscaled
+  when: tailscale_status.rc != 0

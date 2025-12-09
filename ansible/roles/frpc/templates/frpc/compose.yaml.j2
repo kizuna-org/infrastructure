@@ -1,0 +1,39 @@
+# kics-scan disable=d6355c88-1e8d-49e9-b2f2-f8a1ca12c75b,1c1325ff-831d-43a1-973e-839ae57dfcc0,698ed579-b239-4f8f-a388-baa4bcb13ef8
+services:
+
+  fclient:
+    image: fclient
+    container_name: fclient
+    volumes:
+      - ./fclient/fclient.toml:/etc/fclient.toml
+    networks:
+      - ci-network
+{% if kind_network_exists | default(false) %}
+      - kind-network
+{% endif %}
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.27.0
+    container_name: blackbox-exporter
+    ports:
+      - "9115:9115"
+    networks:
+      - ci-network
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./blackbox/prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: always
+
+networks:
+  ci-network:
+{% if kind_network_exists | default(false) %}
+  kind-network:
+    external: true
+    name: "{{ kind_network_name }}"
+{% endif %}

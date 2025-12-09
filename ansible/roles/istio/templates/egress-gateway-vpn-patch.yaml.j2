@@ -1,0 +1,77 @@
+---
+# Patch for Istio Egress Gateway to add Tailscale VPN sidecar
+# This enables all egress traffic to route through a Tailscale client inside the pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-egressgateway
+  namespace: istio-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: tailscale-vpn
+          image: "{{ tailscale_image }}"
+          imagePullPolicy: "{{ tailscale_image_pull_policy | default('IfNotPresent') }}"
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "while ! ip rule; do sleep 1; done; ip rule add to 10.96.0.0/12 lookup main priority 500; ip rule add to 172.16.15.25/32 lookup main priority 500"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            capabilities:
+              add:
+                - NET_ADMIN
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  # 実運用では Secret から参照することを推奨
+                  # ここでは値が未設定の場合に備えて default を残している
+                  name: "{{ tailscale_k8s_secret_name | default('tailscale-egress-auth') }}"
+                  key: authkey
+            - name: TS_HOSTNAME
+              value: "{{ tailscale_hostname }}"
+            - name: TS_STATE_DIR
+              value: "{{ tailscale_state_dir }}"
+            - name: TS_EXTRA_ARGS
+              value: "{{ tailscale_extra_args }}"
+            - name: TS_USERSPACE
+              value: "false"
+            # HTTP PROXY環境変数を設定してDERPサーバーへの接続をHTTP PROXY経由にする
+            - name: HTTP_PROXY
+              value: "{{ istio_http_proxy | default('http://http-p.srv.cc.suzuka-ct.ac.jp:8080') }}"
+            - name: HTTPS_PROXY
+              value: "{{ istio_https_proxy | default('http://http-p.srv.cc.suzuka-ct.ac.jp:8080') }}"
+            - name: http_proxy
+              value: "{{ istio_http_proxy | default('http://http-p.srv.cc.suzuka-ct.ac.jp:8080') }}"
+            - name: https_proxy
+              value: "{{ istio_https_proxy | default('http://http-p.srv.cc.suzuka-ct.ac.jp:8080') }}"
+            - name: NO_PROXY
+              value: "{{ istio_no_proxy | default('localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local') }}"
+            - name: no_proxy
+              value: "{{ istio_no_proxy | default('localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local') }}"
+          volumeMounts:
+            - name: dev-net-tun
+              mountPath: /dev/net/tun
+            - name: tailscale-state
+              mountPath: "{{ tailscale_state_dir }}"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+      volumes:
+        - name: dev-net-tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+          # NOTE: Kubernetes ノード側で /dev/net/tun が利用可能であることが前提
+        - name: tailscale-state
+          emptyDir: {}
+      shareProcessNamespace: true

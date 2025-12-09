@@ -1,0 +1,26 @@
+---
+# ServiceEntry to allow all external HTTP/HTTPS traffic
+# NOTE:
+#   - ここで定義する外部ホストは、Istio egress gateway 経由で Tailscale Pod を通って外部に到達します。
+#   - アプリケーションレベルの HTTP プロキシは利用せず、Tailscale ネットワークを経由した L4 ルーティングのみを行います。
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-services
+  namespace: istio-system
+spec:
+  hosts:
+    - "example.com"
+    - "www.google.com"
+    - "google.com"
+  ports:
+    - number: 80
+      name: http
+      protocol: HTTP
+    - number: 443
+      name: https
+      protocol: TLS
+  location: MESH_EXTERNAL
+  resolution: DNS
+  exportTo:
+    - "."

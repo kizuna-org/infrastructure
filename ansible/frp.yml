@@ -1,0 +1,20 @@
+- name: Deploy frp docker compose
+  hosts: snct-proxy-srv.shiron.dev
+  gather_facts: true
+  roles:
+    - role: frp
+      tags:
+        - frp
+    - role: ocserv
+      when: ocserv_enabled | default(false)
+      tags:
+        - ocserv
+    - role: tailscale
+      tags:
+        - tailscale
+
+- name: Deploy frp client
+  hosts: edu-gpu-2
+  gather_facts: true
+  roles:
+    - frpc

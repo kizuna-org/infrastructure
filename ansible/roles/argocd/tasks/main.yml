@@ -110,6 +110,54 @@
   environment: "{{ argocd_proxy_env }}"
   when: install_argocd
 
+- name: Initialise ArgoCD proxy CLI environment args
+  ansible.builtin.set_fact:
+    argocd_proxy_env_cli_args: []
+  when: install_argocd
+
+- name: Collect ArgoCD proxy CLI environment args
+  ansible.builtin.set_fact:
+    argocd_proxy_env_cli_args: "{{ argocd_proxy_env_cli_args + [item.key ~ '=' ~ item.value | string] }}"
+  loop: "{{ argocd_proxy_env | dict2items | list }}"
+  when:
+    - install_argocd
+    - item.key in proxy_env_keys
+    - item.value is defined
+    - (item.value | string | length) > 0
+  vars:
+    proxy_env_keys:
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY
+      - http_proxy
+      - https_proxy
+      - no_proxy
+
+- name: Define ArgoCD workloads requiring proxy settings
+  ansible.builtin.set_fact:
+    argocd_proxy_workloads:
+      - {resource: 'deployment/argocd-server', container: 'argocd-server'}
+      - {resource: 'deployment/argocd-repo-server', container: 'argocd-repo-server'}
+      - {resource: 'deployment/argocd-applicationset-controller', container: 'argocd-applicationset-controller'}
+      - {resource: 'deployment/argocd-notifications-controller', container: 'argocd-notifications-controller'}
+      - {resource: 'statefulset/argocd-application-controller', container: 'argocd-application-controller'}
+  when: install_argocd
+
+- name: Apply proxy environment variables to ArgoCD workloads
+  ansible.builtin.command:
+    argv: "{{ base_set_env_cmd + container_args + argocd_proxy_env_cli_args }}"
+  loop: "{{ argocd_proxy_workloads | default([]) }}"
+  register: argocd_proxy_set_env
+  changed_when: >
+    (argocd_proxy_set_env.stdout is defined)
+    and ('env updated' in argocd_proxy_set_env.stdout)
+  when:
+    - install_argocd
+    - (argocd_proxy_env_cli_args | default([])) | length > 0
+  vars:
+    base_set_env_cmd: "{{ kubectl_base_command + ['set', 'env', item.resource, '-n', 'argocd'] }}"
+    container_args: "{{ ['--containers', item.container] if item.container | default('') | length > 0 else [] }}"
+
 - name: Wait for ArgoCD deployments to become available
   ansible.builtin.command:
     argv: "{{ kubectl_base_command + ['wait', '--for=condition=Available', '--namespace', 'argocd', 'deployment', '--all', '--timeout=600s'] }}"
@@ -130,4 +178,132 @@
   ansible.builtin.debug:
     var: argocd_deployments.stdout_lines
   when: install_argocd
+
+- name: Get current ArgoCD server service type
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['get', 'service', 'argocd-server', '-n', 'argocd', '-o', 'jsonpath={.spec.type}'] }}"
+  register: argocd_service_type
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Patch ArgoCD server service to NodePort
+  ansible.builtin.command:
+    argv: >-
+      {{
+        kubectl_base_command
+        + [
+          'patch',
+          'service',
+          'argocd-server',
+          '-n',
+          'argocd',
+          '--type',
+          'json',
+          '-p',
+          '[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]'
+        ]
+      }}
+  register: argocd_service_patch
+  changed_when: >
+    (argocd_service_patch.stdout is defined) and
+    ('patched' in argocd_service_patch.stdout or 'unchanged' not in argocd_service_patch.stdout)
+  environment: "{{ argocd_proxy_env }}"
+  when:
+    - install_argocd
+    - argocd_service_type.stdout != "NodePort"
+
+- name: Get NodePort port number
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['get', 'service', 'argocd-server', '-n', 'argocd', '-o', 'jsonpath={.spec.ports[0].nodePort}'] }}"
+  register: argocd_nodeport
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Display port mapping information
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD server service has been changed to NodePort.
+      NodePort: {{ argocd_nodeport.stdout }}
+      Note: To access ArgoCD on port 8080 from outside the kind cluster,
+      the kind cluster must be created with extraPortMappings configured
+      (hostPort: 8080 -> containerPort: {{ argocd_nodeport.stdout }}).
+      For existing clusters, you may need to recreate the cluster with
+      the configuration, or use kubectl port-forward.
+  when: install_argocd
+
+- name: Display ArgoCD server service
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['get', 'service', 'argocd-server', '-n', 'argocd'] }}"
+  register: argocd_service_info
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Show ArgoCD server service info
+  ansible.builtin.debug:
+    var: argocd_service_info.stdout_lines
+  when: install_argocd
+
+- name: Render argocd command params ConfigMap
+  ansible.builtin.template:
+    src: argocd-cmd-params-cm.yaml.j2
+    dest: "{{ argocd_manifest_dir }}/argocd-cmd-params-cm.yaml"
+    mode: '0644'
+  register: argocd_cmd_params_template
+  when: install_argocd
+
+- name: Apply argocd command params ConfigMap
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['apply', '-n', 'argocd', '-f', '/workspace/argocd-cmd-params-cm.yaml'] }}"
+  register: argocd_cmd_params_apply
+  changed_when: >
+    (argocd_cmd_params_apply.stdout is defined)
+    and
+    (
+      'configured' in argocd_cmd_params_apply.stdout
+      or 'created' in argocd_cmd_params_apply.stdout
+    )
+  environment: "{{ argocd_proxy_env }}"
+  when: install_argocd
+
+- name: Restart ArgoCD server deployment to apply insecure setting
+  ansible.builtin.command:
+    argv: >-
+      {{
+        kubectl_base_command
+        + [
+          'rollout',
+          'restart',
+          'deployment',
+          'argocd-server',
+          '-n',
+          'argocd'
+        ]
+      }}
+  register: argocd_server_restart
+  changed_when: >
+    (argocd_server_restart.stdout is defined) and
+    ('restarted' in argocd_server_restart.stdout or 'unchanged' not in argocd_server_restart.stdout)
+  environment: "{{ argocd_proxy_env }}"
+  when:
+    - install_argocd
+    - >
+      (
+        (argocd_cmd_params_template is defined and argocd_cmd_params_template.changed)
+        or
+        (argocd_cmd_params_apply is defined and argocd_cmd_params_apply.changed)
+      )
+
+- name: Wait for ArgoCD server deployment to become available after restart
+  ansible.builtin.command:
+    argv: "{{ kubectl_base_command + ['wait', '--for=condition=Available', '--namespace', 'argocd', 'deployment', 'argocd-server', '--timeout=300s'] }}"
+  register: argocd_server_wait_after_restart
+  changed_when: false
+  environment: "{{ argocd_proxy_env }}"
+  when:
+    - install_argocd
+    - argocd_server_restart is defined
+    - argocd_server_restart.changed | default(false)
 

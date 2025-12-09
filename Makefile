@@ -4,6 +4,7 @@ ANSIBLE_INVENTORY := inventory.yml
 ANSIBLE_HOST := edu-gpu
 SSH_HOST := edu-gpu
 SSH_CONFIG := $(ANSIBLE_DIR)/ssh_config
+TAGS := all
 
 .PHONY: ansible-ping
 ansible-ping:
@@ -27,7 +28,7 @@ ansible-playbook-apply:
 		echo "Error: Please specify PLAYBOOK variable. Example: make ansible-playbook-apply PLAYBOOK=playbook.yml"; \
 		exit 1; \
 	fi
-	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) $(PLAYBOOK)
+	@cd $(ANSIBLE_DIR) && ansible-playbook -i $(ANSIBLE_INVENTORY) $(PLAYBOOK) --tags $(TAGS)
 
 .PHONY: ansible-adhoc
 ansible-adhoc:
@@ -51,7 +52,7 @@ ssh-forward:
 		echo "Error: Please specify PORT variable. Example: make ssh-forward PORT=8080"; \
 		exit 1; \
 	fi
-	@ssh -F "$(SSH_CONFIG)" -l r03i23 -L "$(PORT):localhost:$(PORT)" -N -f "$(SSH_HOST)"
+	@cd $(ANSIBLE_DIR) && ssh -F "../$(SSH_CONFIG)" -l r03i23 -L "$(PORT):localhost:$(PORT)" -N -f "$(SSH_HOST)"
 
 .PHONY: terraform-init
 terraform-init:
@@ -73,52 +74,57 @@ terraform-lint: terraform-init
 terraform-fmt:
 	cd terraform && terraform fmt -recursive
 
-.PHONY: encrypt
-encrypt: encrypt-ansible-vars encrypt-edu-gpu-kind-portforward
-
-.PHONY: decrypt
-decrypt: decrypt-ansible-vars decrypt-edu-gpu-kind-portforward
-
-.PHONY: encrypt-edu-gpu-kind-portforward
-encrypt-edu-gpu-kind-portforward:
-	sops --encrypt --output kubeconfig/edu-gpu-kind-portforward.sops.yaml kubeconfig/edu-gpu-kind-portforward.yaml
-
-.PHONY: decrypt-edu-gpu-kind-portforward
-decrypt-edu-gpu-kind-portforward:
-	sops --decrypt --output kubeconfig/edu-gpu-kind-portforward.yaml kubeconfig/edu-gpu-kind-portforward.sops.yaml
-
-.PHONY: encrypt-ansible-vars
-encrypt-ansible-vars:
-	@for vars_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main.yml 2>/dev/null); do \
-		role_dir=$$(dirname $$(dirname $$vars_file)); \
-		role_name=$$(basename $$role_dir); \
-		if [ -f $$vars_file ]; then \
-			echo "Encrypting $$vars_file..."; \
-			sops --encrypt --output $$(dirname $$vars_file)/main.sops.yml $$vars_file || exit 1; \
-		fi; \
-	done
-	@for vars_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main/main.yml 2>/dev/null); do \
-		role_dir=$$(dirname $$(dirname $$(dirname $$vars_file))); \
-		role_name=$$(basename $$role_dir); \
-		if [ -f $$vars_file ]; then \
-			echo "Encrypting $$vars_file..."; \
-			sops --encrypt --output $$(dirname $$vars_file)/main.sops.yml $$vars_file || exit 1; \
-		fi; \
+.PHONY: sops-encrypt
+sops-encrypt:
+	@echo "Encrypting with SOPS..."; \
+	if [ -n "$(FILE)" ]; then \
+		if [ -f "$(FILE)" ] && [ "$${FILE##*.}" != "sops" ]; then FILES="$(FILE)"; \
+		elif [ -f "$(FILE)" ] && [ "$${FILE##*.}" = "sops" ]; then base="$${FILE%.sops}"; if [ -f "$$base" ]; then FILES="$$base"; else echo "Error: plaintext $$base not found for $(FILE)" >&2; exit 1; fi; \
+		elif [ -f "$(FILE).sops" ]; then base="$(FILE)"; if [ -f "$$base" ]; then FILES="$$base"; else echo "Error: plaintext $$base not found (got $(FILE).sops)" >&2; exit 1; fi; \
+		else echo "Error: $(FILE) not found" >&2; exit 1; fi; \
+	else \
+		FILES="$$(find . -name "*.secrets.*" -type f ! -name "*.sops")"; \
+	fi; \
+	for file in $$FILES; do \
+		echo "Encrypting $$file..."; \
+		sops --output-type json --encrypt "$$file" > "$$file.sops"; \
 	done
 
-.PHONY: decrypt-ansible-vars
-decrypt-ansible-vars:
-	@for sops_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main.sops.yml 2>/dev/null); do \
-		vars_dir=$$(dirname $$sops_file); \
-		if [ -f $$sops_file ]; then \
-			echo "Decrypting $$sops_file..."; \
-			sops --decrypt --output $$vars_dir/main.yml $$sops_file || exit 1; \
-		fi; \
+.PHONY: sops-decrypt
+sops-decrypt:
+	@echo "Decrypting with SOPS..."; \
+	if [ -n "$(FILE)" ]; then \
+		if [ -f "$(FILE)" ]; then FILES="$(FILE)"; \
+		elif [ -f "$(FILE).sops" ]; then FILES="$(FILE).sops"; \
+		else echo "Error: $(FILE) or $(FILE).sops not found" >&2; exit 1; fi; \
+	else \
+		FILES="$$(find . -name "*.secrets.*.sops" -type f)"; \
+	fi; \
+	for file in $$FILES; do \
+		echo "Decrypting $$file..."; \
+		base="$${file%.sops}"; \
+		ext="$${base##*.}"; \
+		case "$$ext" in \
+		  yaml|yml) output_type="yaml" ;; \
+		  *) output_type="binary" ;; \
+		esac; \
+		if [ -f "$$base" ]; then chmod +w "$$base"; fi; \
+		sops --decrypt --output-type "$$output_type" "$$file" > "$$base"; \
+		chmod -w "$$base"; \
 	done
-	@for sops_file in $$(find $(ANSIBLE_DIR)/roles/*/vars/main/main.sops.yml 2>/dev/null); do \
-		vars_dir=$$(dirname $$sops_file); \
-		if [ -f $$sops_file ]; then \
-			echo "Decrypting $$sops_file..."; \
-			sops --decrypt --output $$vars_dir/main.yml $$sops_file || exit 1; \
+
+.PHONY: sops-ci
+sops-ci:
+	@echo "Checking for unencrypted secrets tracked by git..."; \
+	FILES="$$(find . -name '*.secrets.*' ! -name '*.secrets.*.sops' -type f)"; \
+	EXIT=0; \
+	for file in $$FILES; do \
+		if git ls-files --error-unmatch "$$file" >/dev/null 2>&1; then \
+			echo "Error: Unencrypted secrets file tracked by git: $$file" >&2; \
+			EXIT=1; \
 		fi; \
-	done
+	done; \
+	if [ $$EXIT -ne 0 ]; then \
+		echo "One or more unencrypted secrets files are tracked by git. Please remove them from version control." >&2; \
+		exit 1; \
+	fi

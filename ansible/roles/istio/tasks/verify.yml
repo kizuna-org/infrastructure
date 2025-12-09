@@ -1,0 +1,398 @@
+---
+# Verification tasks for Istio egress gateway proxy configuration
+- name: Create test pod manifest
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: test-curl
+        namespace: default
+        labels:
+          app: test-curl
+      spec:
+        containers:
+          - name: curl
+            image: curlimages/curl:latest
+            command: ["/bin/sh"]
+            args: ["-c", "sleep 3600"]
+    dest: "{{ resolved_home }}/.cache/istio/manifests/test-pod.yaml"
+    mode: '0644'
+
+- name: Deploy test pod
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/test-pod.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: test_pod_deploy
+  changed_when: "'created' in test_pod_deploy.stdout or 'configured' in test_pod_deploy.stdout"
+  environment: "{{ istio_proxy_env }}"
+
+- name: Wait for test pod to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=ready
+      - --timeout=120s
+      - pod/test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+  register: test_pod_ready
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: test_pod_ready.rc == 0
+
+- name: Verify Istio sidecar injection
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - pod
+      - test-curl
+      - -n
+      - default
+      - -o
+      - jsonpath={.spec.containers[*].name}
+      - --context
+      - "{{ kube_context }}"
+  register: sidecar_check
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display sidecar injection status
+  ansible.builtin.debug:
+    msg: "Pod containers: {{ sidecar_check.stdout }} - Sidecar {{ 'is' if 'istio-proxy' in sidecar_check.stdout else 'is NOT' }} injected"
+
+- name: Test external HTTP connectivity through proxy
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - curl
+      - -I
+      - -m
+      - "10"
+      - http://example.com
+  register: curl_test
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display curl test result
+  ansible.builtin.debug:
+    msg:
+      - "Curl test result: {{ 'SUCCESS' if (curl_test.rc | default(1)) == 0 else 'FAILED' }}"
+      - "Output: {{ curl_test.stdout | default('N/A') }}"
+      - "Error: {{ curl_test.stderr | default('N/A') }}"
+
+- name: Test Tailscale-only endpoint from workload (optional)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - test-curl
+      - -n
+      - default
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - curl
+      - -I
+      - -m
+      - "15"
+      - "{{ tailscale_verification_target }}"
+  register: tailscale_target_curl
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: (tailscale_verification_target | default('')) | length > 0
+
+- name: Display Tailscale-only curl result
+  ansible.builtin.debug:
+    msg:
+      - "Tailscale target test: {{ 'SUCCESS' if (tailscale_target_curl.rc | default(1)) == 0 else 'FAILED' }}"
+      - "Target: {{ tailscale_verification_target }}"
+      - "Output: {{ tailscale_target_curl.stdout | default('N/A') }}"
+      - "Error: {{ tailscale_target_curl.stderr | default('N/A') }}"
+  when:
+    - tailscale_target_curl is defined
+    - tailscale_target_curl.rc is defined
+
+- name: Discover istio-egressgateway pod for Tailscale status
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - pod
+      - -n
+      - istio-system
+      - -l
+      - app=istio-egressgateway
+      - -o
+      - jsonpath={.items[0].metadata.name}
+      - --context
+      - "{{ kube_context }}"
+  register: tailscale_egress_pod_lookup
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Record istio-egressgateway pod name
+  ansible.builtin.set_fact:
+    tailscale_egress_pod_name: "{{ tailscale_egress_pod_lookup.stdout | default('') | trim }}"
+  when:
+    - tailscale_egress_pod_lookup.stdout | default('') | length > 0
+
+- name: Check tailscale status inside egress gateway
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - "{{ tailscale_egress_pod_name }}"
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - tailscale
+      - status
+      - --active
+  register: tailscale_status_result
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - tailscale_egress_pod_name is defined
+    - tailscale_egress_pod_name | length > 0
+
+- name: Display tailscale status summary
+  ansible.builtin.debug:
+    msg:
+      - "tailscale status output:"
+      - "{{ tailscale_status_result.stdout | default('N/A') }}"
+  when:
+    - tailscale_status_result is defined
+    - tailscale_status_result.stdout is defined
+
+- name: Check tailscale ping to control plane (optional)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - exec
+      - "{{ tailscale_egress_pod_name }}"
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+      - --
+      - tailscale
+      - ping
+      - --c=3
+      - "{{ tailscale_verification_target }}"
+  register: tailscale_ping_result
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - tailscale_egress_pod_name is defined
+    - tailscale_egress_pod_name | length > 0
+    - (tailscale_verification_target | default('')) | length > 0
+
+- name: Display tailscale ping result
+  ansible.builtin.debug:
+    msg:
+      - "tailscale ping result: {{ 'SUCCESS' if (tailscale_ping_result.rc | default(1)) == 0 else 'FAILED' }}"
+      - "Output: {{ tailscale_ping_result.stdout | default('N/A') }}"
+      - "Error: {{ tailscale_ping_result.stderr | default('N/A') }}"
+  when:
+    - tailscale_ping_result is defined
+    - tailscale_ping_result.rc is defined
+
+- name: Check egress gateway logs for traffic
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - logs
+      - -n
+      - istio-system
+      - -l
+      - app=istio-egressgateway
+      - --tail=50
+      - --context
+      - "{{ kube_context }}"
+  register: egress_logs
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Display egress gateway logs
+  ansible.builtin.debug:
+    msg: "Recent egress gateway logs:"
+    verbosity: 1
+
+- name: Display egress gateway logs detail
+  ansible.builtin.debug:
+    var: egress_logs.stdout_lines
+    verbosity: 1
+
+- name: Verification summary
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "Istio Egress Gateway Verification Summary"
+      - "=========================================="
+      - "Sidecar injection: {{ 'OK' if 'istio-proxy' in (sidecar_check.stdout | default('')) else 'FAILED' }}"
+      - "External connectivity: {{ 'OK' if (curl_test.rc | default(1)) == 0 else 'FAILED' }}"
+      - >-
+        Tailscale-only connectivity ({{
+          tailscale_verification_target | default('not configured')
+        }}): {{
+          'OK'
+          if (tailscale_target_curl is defined and tailscale_target_curl.rc is defined and tailscale_target_curl.rc == 0)
+          else 'SKIPPED'
+        }}
+      - >-
+        tailscale status check: {{
+          'OK'
+          if (tailscale_status_result is defined and tailscale_status_result.rc is defined and tailscale_status_result.rc == 0)
+          else 'SKIPPED'
+        }}
+      - "Egress mode: Tailscale (via istio-egressgateway sidecar)"
+      - ""
+      - "To manually test:"
+      - "  kubectl exec -n default test-curl -- curl -I http://example.com"
+      - ""
+      - "To view egress gateway logs:"
+      - "  kubectl logs -n istio-system -l app=istio-egressgateway --tail=100"
+      - ""
+      - "To check Tailscale status in egress gateway:"
+      - "  kubectl exec -n istio-system <istio-egressgateway-pod> -c tailscale-vpn -- tailscale status"
+      - ""
+      - "To clean up test pod:"
+      - "  kubectl delete pod test-curl -n default"
+
+
+
+
+
+
+
+
+
+
+

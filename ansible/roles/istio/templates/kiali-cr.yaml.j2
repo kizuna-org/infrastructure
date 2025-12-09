@@ -1,0 +1,28 @@
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  deployment:
+    namespace: istio-system
+    verbose_mode: "{{ kiali_verbose_mode | default('info') }}"
+    view_only_mode: {{ kiali_view_only_mode | default(false) }}
+{% if kiali_accessible_namespaces is defined %}
+    accessible_namespaces:
+{% for ns in kiali_accessible_namespaces %}
+      - "{{ ns }}"
+{% endfor %}
+{% endif %}
+  auth:
+    strategy: "{{ kiali_auth_strategy | default('anonymous') }}"
+  server:
+    web_root: "{{ kiali_web_root | default('/kiali') }}"
+    port: {{ kiali_port | default(20001) }}
+  external_services:
+    prometheus:
+      url: "{{ kiali_prometheus_url | default('http://prometheus.istio-system:9090') }}"
+    grafana:
+      enabled: {{ kiali_grafana_enabled | default(false) }}
+    tracing:
+      enabled: {{ kiali_tracing_enabled | default(false) }}
