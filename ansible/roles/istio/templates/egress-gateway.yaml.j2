@@ -22,9 +22,9 @@ spec:
       hosts:
         - "*"
       tls:
-        mode: ISTIO_MUTUAL
+        mode: PASSTHROUGH
 ---
-# VirtualService to route all external traffic through the egress gateway
+# VirtualService to route external traffic through the egress gateway FROM sidecars
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -32,7 +32,9 @@ metadata:
   namespace: istio-system
 spec:
   hosts:
-    - "*"
+    - "google.com"
+    - "www.google.com"
+    - "example.com"
   gateways:
     - mesh
   http:
@@ -52,7 +54,9 @@ spec:
             - mesh
           port: 443
           sniHosts:
-          - "*"
+          - "google.com"
+          - "www.google.com"
+          - "example.com"
       route:
         - destination:
             host: istio-egressgateway.istio-system.svc.cluster.local
@@ -92,28 +96,75 @@ spec:
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
-  name: egress-gateway-upstream-external
+  name: egress-gateway-google-http
+  namespace: istio-system
+spec:
+  hosts:
+  - "google.com"
+  gateways:
+  - istio-egressgateway
+  http:
+  - route:
+    - destination:
+        host: google.com
+        port:
+          number: 80
+  exportTo:
+  - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: egress-gateway-www-google-http
   namespace: istio-system
 spec:
   hosts:
   - "www.google.com"
+  gateways:
+  - istio-egressgateway
+  http:
+  - route:
+    - destination:
+        host: www.google.com
+        port:
+          number: 80
+  exportTo:
+  - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: egress-gateway-example-http
+  namespace: istio-system
+spec:
+  hosts:
+  - "example.com"
+  gateways:
+  - istio-egressgateway
+  http:
+  - route:
+    - destination:
+        host: example.com
+        port:
+          number: 80
+  exportTo:
+  - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: egress-gateway-external-https
+  namespace: istio-system
+spec:
+  hosts:
   - "google.com"
+  - "www.google.com"
   - "example.com"
   gateways:
   - istio-egressgateway
   tls:
   - match:
-    - port: 443
-      sniHosts:
-      - "www.google.com"
-    route:
-    - destination:
-        host: www.google.com
-        port:
-          number: 443
-  - match:
-    - port: 443
-      sniHosts:
+    - sniHosts:
       - "google.com"
     route:
     - destination:
@@ -121,11 +172,59 @@ spec:
         port:
           number: 443
   - match:
-    - port: 443
-      sniHosts:
+    - sniHosts:
+      - "www.google.com"
+    route:
+    - destination:
+        host: www.google.com
+        port:
+          number: 443
+  - match:
+    - sniHosts:
       - "example.com"
     route:
     - destination:
         host: example.com
         port:
           number: 443
+  exportTo:
+  - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-google-tls
+  namespace: istio-system
+spec:
+  host: "google.com"
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+  exportTo:
+    - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-www-google-tls
+  namespace: istio-system
+spec:
+  host: "www.google.com"
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+  exportTo:
+    - "."
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-example-tls
+  namespace: istio-system
+spec:
+  host: "example.com"
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+  exportTo:
+    - "."
