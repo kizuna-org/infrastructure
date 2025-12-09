@@ -1,0 +1,10 @@
+- name: Restart Tailscale on Proxy
+  hosts: snct-proxy-srv.shiron.dev
+  gather_facts: false
+  tasks:
+    - name: Ensure tailscaled is started and enabled
+      ansible.builtin.service:
+        name: tailscaled
+        state: restarted
+        enabled: true
+      become: true

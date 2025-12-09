@@ -10,24 +10,18 @@ metadata:
   namespace: istio-system
 spec:
   hosts:
-    - "*.com"
-    - "*.net"
-    - "*.org"
-    - "*.io"
-    - "*.dev"
-    - "*.co.jp"
-    - "*.jp"
-    - "*.edu"
-    - "*.gov"
+    - "example.com"
+    - "www.google.com"
+    - "google.com"
   ports:
     - number: 80
       name: http
       protocol: HTTP
     - number: 443
       name: https
-      protocol: HTTPS
+      protocol: TLS
   location: MESH_EXTERNAL
-  resolution: NONE
+  resolution: DNS
 
 
 

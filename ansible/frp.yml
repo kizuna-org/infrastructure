@@ -9,6 +9,9 @@
       when: ocserv_enabled | default(false)
       tags:
         - ocserv
+    - role: tailscale
+      tags:
+        - tailscale
 
 - name: Deploy frp client
   hosts: edu-gpu-2

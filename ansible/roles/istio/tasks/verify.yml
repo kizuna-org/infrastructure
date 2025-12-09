@@ -142,9 +142,9 @@
 - name: Display curl test result
   ansible.builtin.debug:
     msg:
-      - "Curl test result: {{ 'SUCCESS' if curl_test.rc == 0 else 'FAILED' }}"
-      - "Output: {{ curl_test.stdout }}"
-      - "Error: {{ curl_test.stderr }}"
+      - "Curl test result: {{ 'SUCCESS' if (curl_test.rc | default(1)) == 0 else 'FAILED' }}"
+      - "Output: {{ curl_test.stdout | default('N/A') }}"
+      - "Error: {{ curl_test.stderr | default('N/A') }}"
 
 - name: Test Tailscale-only endpoint from workload (optional)
   ansible.builtin.command:
@@ -182,12 +182,13 @@
 - name: Display Tailscale-only curl result
   ansible.builtin.debug:
     msg:
-      - "Tailscale target test: {{ 'SUCCESS' if tailscale_target_curl.rc == 0 else 'FAILED' }}"
+      - "Tailscale target test: {{ 'SUCCESS' if (tailscale_target_curl.rc | default(1)) == 0 else 'FAILED' }}"
       - "Target: {{ tailscale_verification_target }}"
-      - "Output: {{ tailscale_target_curl.stdout }}"
-      - "Error: {{ tailscale_target_curl.stderr }}"
+      - "Output: {{ tailscale_target_curl.stdout | default('N/A') }}"
+      - "Error: {{ tailscale_target_curl.stderr | default('N/A') }}"
   when:
     - tailscale_target_curl is defined
+    - tailscale_target_curl.rc is defined
 
 - name: Discover istio-egressgateway pod for Tailscale status
   ansible.builtin.command:
@@ -262,8 +263,10 @@
   ansible.builtin.debug:
     msg:
       - "tailscale status output:"
-      - "{{ tailscale_status_result.stdout }}"
-  when: tailscale_status_result is defined
+      - "{{ tailscale_status_result.stdout | default('N/A') }}"
+  when:
+    - tailscale_status_result is defined
+    - tailscale_status_result.stdout is defined
 
 - name: Check tailscale ping to control plane (optional)
   ansible.builtin.command:
@@ -303,10 +306,12 @@
 - name: Display tailscale ping result
   ansible.builtin.debug:
     msg:
-      - "tailscale ping result: {{ 'SUCCESS' if tailscale_ping_result.rc == 0 else 'FAILED' }}"
-      - "Output: {{ tailscale_ping_result.stdout }}"
-      - "Error: {{ tailscale_ping_result.stderr }}"
-  when: tailscale_ping_result is defined
+      - "tailscale ping result: {{ 'SUCCESS' if (tailscale_ping_result.rc | default(1)) == 0 else 'FAILED' }}"
+      - "Output: {{ tailscale_ping_result.stdout | default('N/A') }}"
+      - "Error: {{ tailscale_ping_result.stderr | default('N/A') }}"
+  when:
+    - tailscale_ping_result is defined
+    - tailscale_ping_result.rc is defined
 
 - name: Check egress gateway logs for traffic
   ansible.builtin.command:
@@ -351,29 +356,32 @@
       - "=========================================="
       - "Istio Egress Gateway Verification Summary"
       - "=========================================="
-      - "Sidecar injection: {{ 'OK' if 'istio-proxy' in sidecar_check.stdout else 'FAILED' }}"
-      - "External connectivity: {{ 'OK' if curl_test.rc == 0 else 'FAILED' }}"
+      - "Sidecar injection: {{ 'OK' if 'istio-proxy' in (sidecar_check.stdout | default('')) else 'FAILED' }}"
+      - "External connectivity: {{ 'OK' if (curl_test.rc | default(1)) == 0 else 'FAILED' }}"
       - >-
         Tailscale-only connectivity ({{
           tailscale_verification_target | default('not configured')
         }}): {{
           'OK'
-          if (tailscale_target_curl is defined and tailscale_target_curl.rc == 0)
+          if (tailscale_target_curl is defined and tailscale_target_curl.rc is defined and tailscale_target_curl.rc == 0)
           else 'SKIPPED'
         }}
       - >-
         tailscale status check: {{
           'OK'
-          if (tailscale_status_result is defined and tailscale_status_result.rc == 0)
+          if (tailscale_status_result is defined and tailscale_status_result.rc is defined and tailscale_status_result.rc == 0)
           else 'SKIPPED'
         }}
-      - "Proxy URL: {{ proxy_url }}"
+      - "Egress mode: Tailscale (via istio-egressgateway sidecar)"
       - ""
       - "To manually test:"
       - "  kubectl exec -n default test-curl -- curl -I http://example.com"
       - ""
       - "To view egress gateway logs:"
       - "  kubectl logs -n istio-system -l app=istio-egressgateway --tail=100"
+      - ""
+      - "To check Tailscale status in egress gateway:"
+      - "  kubectl exec -n istio-system <istio-egressgateway-pod> -c tailscale-vpn -- tailscale status"
       - ""
       - "To clean up test pod:"
       - "  kubectl delete pod test-curl -n default"

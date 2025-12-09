@@ -1,0 +1,43 @@
+---
+# Role for Tailscale to manage its Kubernetes Secret
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tailscale-secret-manager
+  namespace: istio-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    # NOTE: resourceNamesを指定しないことで、任意の名前のSecretを作成・更新できるようにする
+    # Tailscaleは自身の状態を保存するためにSecretを作成する必要がある
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - create
+      - patch
+---
+# RoleBinding to grant Tailscale permissions to the egress gateway service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tailscale-secret-manager-binding
+  namespace: istio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tailscale-secret-manager
+subjects:
+  - kind: ServiceAccount
+    name: istio-egressgateway-service-account
+    namespace: istio-system
+

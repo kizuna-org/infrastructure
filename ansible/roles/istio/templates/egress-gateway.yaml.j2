@@ -18,13 +18,13 @@ spec:
     - port:
         number: 443
         name: https
-        protocol: HTTPS
+        protocol: TLS
       hosts:
         - "*"
       tls:
-        mode: PASSTHROUGH
+        mode: ISTIO_MUTUAL
 ---
-# VirtualService to route all external HTTP/HTTPS traffic through the egress gateway
+# VirtualService to route all external traffic through the egress gateway
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -35,7 +35,6 @@ spec:
     - "*"
   gateways:
     - mesh
-    - istio-egressgateway
   http:
     - match:
         - gateways:
@@ -44,64 +43,22 @@ spec:
       route:
         - destination:
             host: istio-egressgateway.istio-system.svc.cluster.local
+            subset: http
             port:
               number: 80
-          weight: 100
+  tls:
     - match:
         - gateways:
             - mesh
           port: 443
+          sniHosts:
+          - "*"
       route:
         - destination:
             host: istio-egressgateway.istio-system.svc.cluster.local
+            subset: https
             port:
               number: 443
-          weight: 100
-    # NOTE:
-    #   - egressgateway 側の Tailscale sidecar を通過した後は、通常のネットワークルーティングに従い
-    #     インターネット / 社内サービスへ到達します。
-    #   - ここではアプリケーションレベルの HTTP プロキシは介さず、L4 レベルのルーティングのみを行います。
-    - match:
-        - gateways:
-            - istio-egressgateway
-          port: 80
-      route:
-        - destination:
-            host: istio-egressgateway.istio-system.svc.cluster.local
-            port:
-              number: 80
-          weight: 100
-    - match:
-        - gateways:
-            - istio-egressgateway
-          port: 443
-      route:
-        - destination:
-            host: istio-egressgateway.istio-system.svc.cluster.local
-            port:
-              number: 443
-          weight: 100
-  tcp:
-    - match:
-        - gateways:
-            - mesh
-          port: 443
-      route:
-        - destination:
-            host: istio-egressgateway.istio-system.svc.cluster.local
-            port:
-              number: 443
-          weight: 100
-    - match:
-        - gateways:
-            - istio-egressgateway
-          port: 443
-      route:
-        - destination:
-            host: istio-egressgateway.istio-system.svc.cluster.local
-            port:
-              number: 443
-          weight: 100
 ---
 # DestinationRule for the egress gateway
 apiVersion: networking.istio.io/v1beta1
@@ -111,7 +68,64 @@ metadata:
   namespace: istio-system
 spec:
   host: istio-egressgateway.istio-system.svc.cluster.local
-  trafficPolicy:
-    tls:
-      mode: DISABLE
+  subsets:
+  - name: http
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN
+      portLevelSettings:
+      - port:
+          number: 80
+        tls:
+          mode: DISABLE
+  - name: https
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN
+      portLevelSettings:
+      - port:
+          number: 443
+        tls:
+          mode: ISTIO_MUTUAL
+
 ---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: egress-gateway-upstream-external
+  namespace: istio-system
+spec:
+  hosts:
+  - "www.google.com"
+  - "google.com"
+  - "example.com"
+  gateways:
+  - istio-egressgateway
+  tls:
+  - match:
+    - port: 443
+      sniHosts:
+      - "www.google.com"
+    route:
+    - destination:
+        host: www.google.com
+        port:
+          number: 443
+  - match:
+    - port: 443
+      sniHosts:
+      - "google.com"
+    route:
+    - destination:
+        host: google.com
+        port:
+          number: 443
+  - match:
+    - port: 443
+      sniHosts:
+      - "example.com"
+    route:
+    - destination:
+        host: example.com
+        port:
+          number: 443

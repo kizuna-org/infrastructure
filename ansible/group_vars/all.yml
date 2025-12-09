@@ -1,17 +1,7 @@
----
-# Legacy VPN stack (ocserv) is disabled now that Istio egress uses Tailscale
-ocserv_enabled: false
+# Tailscale Auth Key for Istio Egress Gateway Sidecar
+# Used in roles/istio
+istio_tailscale_auth_key: "tskey-auth-kGb85XKJLz11CNTRL-Pzmjt948YLf1ChAkPgG9Lf8wV3Tc8ujBX"
 
-# Shared exposure settings
-kiali_node_port: 32001
-kiali_fclient_domain: "kizuna-kiali.shiron.dev"
-
-
-
-
-
-
-
-
-
-
+# Tailscale Auth Key for Proxy Server (Exit Node)
+# Used in roles/tailscale
+proxy_tailscale_auth_key: "tskey-auth-kvk1tEUsmP11CNTRL-xWUSo397yY6rxJVGoTDkY63BDYEaPtUX"

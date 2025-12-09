@@ -237,6 +237,45 @@
   delay: 10
   until: istio_ready.rc == 0
 
+- name: Generate Tailscale RBAC configuration
+  ansible.builtin.template:
+    src: tailscale-rbac.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/tailscale-rbac.yaml"
+    mode: '0644'
+  register: tailscale_rbac_template
+  when: istio_egress_vpn_enabled | default(false)
+
+- name: Apply Tailscale RBAC configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/tailscale-rbac.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: tailscale_rbac_result
+  changed_when: >
+    (tailscale_rbac_result.stdout is defined) and
+    ('created' in tailscale_rbac_result.stdout or 'configured' in tailscale_rbac_result.stdout or 'unchanged' in tailscale_rbac_result.stdout)
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - tailscale_rbac_template is defined
+
 - name: Wait for Istio egress gateway to be ready
   ansible.builtin.command:
     argv:
@@ -266,6 +305,7 @@
   retries: 3
   delay: 10
   until: egress_ready.rc == 0
+  when: not (istio_egress_vpn_enabled | default(false))
 
 - name: Generate egress gateway configuration
   ansible.builtin.template:
@@ -278,7 +318,6 @@
     src: proxy-serviceentry.yaml.j2
     dest: "{{ resolved_home }}/.cache/istio/manifests/proxy-serviceentry.yaml"
     mode: '0644'
-  when: not (istio_egress_vpn_enabled | default(false))
 
 - name: Generate internal ServiceEntry configuration
   ansible.builtin.template:
@@ -337,7 +376,6 @@
   register: proxy_se_result
   changed_when: "'created' in proxy_se_result.stdout or 'configured' in proxy_se_result.stdout"
   environment: "{{ istio_proxy_env }}"
-  when: not (istio_egress_vpn_enabled | default(false))
 
 - name: Apply internal ServiceEntry configuration
   ansible.builtin.command:
@@ -393,58 +431,114 @@
   environment: "{{ istio_proxy_env }}"
   when: istio_egress_vpn_enabled | default(false)
 
-- name: Fail if Tailscale auth Secret is missing
+- name: Generate Tailscale auth Secret manifest
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ tailscale_k8s_secret_name }}
+        namespace: {{ tailscale_secret_namespace }}
+      stringData:
+        authkey: "{{ istio_tailscale_auth_key }}"
+      type: Opaque
+    dest: "{{ resolved_home }}/.cache/istio/manifests/tailscale-secret.yaml"
+    mode: '0644'
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - istio_tailscale_auth_key is defined
+    - (istio_tailscale_auth_key | default('')) | length > 0
+
+- name: Apply Tailscale auth Secret
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/tailscale-secret.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: tailscale_secret_apply
+  changed_when: "'configured' in tailscale_secret_apply.stdout or 'created' in tailscale_secret_apply.stdout"
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - istio_tailscale_auth_key is defined
+    - (istio_tailscale_auth_key | default('')) | length > 0
+
+- name: Fail if Tailscale auth Secret is missing and auth_key is not provided
   ansible.builtin.fail:
     msg: >-
       Required Secret "{{ tailscale_k8s_secret_name }}" was not found in namespace
-      "{{ tailscale_secret_namespace }}". Please create it (e.g.
-      kubectl create secret generic {{ tailscale_k8s_secret_name }} -n {{ tailscale_secret_namespace }}
-      --from-literal=authkey=<tskey-xxxx>) before enabling istio_egress_vpn_enabled.
+      "{{ tailscale_secret_namespace }}", and istio_tailscale_auth_key is not set in vars.
+      Please either:
+      1. Create the Secret manually (e.g. kubectl create secret generic {{ tailscale_k8s_secret_name }} -n {{ tailscale_secret_namespace }} --from-literal=authkey=<tskey-xxxx>), or
+      2. Set istio_tailscale_auth_key in group_vars/all.yml or encrypted vars.
   when:
     - istio_egress_vpn_enabled | default(false)
     - tailscale_secret_check is defined
     - tailscale_secret_check.rc != 0
+    - not (istio_tailscale_auth_key is defined and (istio_tailscale_auth_key | default('')) | length > 0)
 
-- name: Generate Egress Gateway VPN patch configuration
-  ansible.builtin.template:
-    src: egress-gateway-vpn-patch.yaml.j2
-    dest: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-vpn-patch.yaml"
-    mode: '0644'
-  register: egress_vpn_patch_template
-  when: istio_egress_vpn_enabled | default(false)
+- name: Get current Egress Gateway deployment
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - deployment
+      - istio-egressgateway
+      - -n
+      - istio-system
+      - -o
+      - json
+      - --context
+      - "{{ kube_context }}"
+  register: egress_deployment_get
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  failed_when: false
 
-- name: Check if VPN patch file exists
-  ansible.builtin.stat:
-    path: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-vpn-patch.yaml"
-  register: egress_vpn_patch_file_stat
-  delegate_to: localhost
-  run_once: true
-  when: istio_egress_vpn_enabled | default(false)
-
-- name: Read VPN patch manifest content
-  ansible.builtin.slurp:
-    src: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-vpn-patch.yaml"
-  register: egress_vpn_patch_slurp
-  when:
-    - istio_egress_vpn_enabled | default(false)
-    - egress_vpn_patch_file_stat.stat.exists | default(false)
-
-- name: Load VPN patch YAML and extract spec
+- name: Parse Egress Gateway deployment JSON
   ansible.builtin.set_fact:
-    egress_vpn_patch_yaml: "{{ (egress_vpn_patch_slurp.content | b64decode) | from_yaml }}"
+    egress_deployment_json: "{{ egress_deployment_get.stdout | from_json }}"
   when:
-    - istio_egress_vpn_enabled | default(false)
-    - egress_vpn_patch_slurp is defined
-    - (egress_vpn_patch_slurp.content | default('')) | length > 0
+    - egress_deployment_get is defined
+    - egress_deployment_get.rc == 0
+    - egress_deployment_get.stdout is defined
+    - egress_deployment_get.stdout | length > 0
 
-- name: Extract spec from VPN patch and convert to JSON
+- name: Filter out openconnect container from deployment
   ansible.builtin.set_fact:
-    egress_vpn_patch_json: "{{ {'spec': egress_vpn_patch_yaml.spec} | to_json }}"
+    filtered_containers: "{{ egress_deployment_json.spec.template.spec.containers | selectattr('name', 'ne', 'openconnect') | list }}"
+    has_openconnect: "{{ egress_deployment_json.spec.template.spec.containers | selectattr('name', 'equalto', 'openconnect') | list | length > 0 }}"
   when:
-    - istio_egress_vpn_enabled | default(false)
-    - egress_vpn_patch_yaml is defined
+    - egress_deployment_json is defined
 
-- name: Apply Egress Gateway VPN patch
+- name: Remove openconnect container from Egress Gateway
   ansible.builtin.command:
     argv:
       - docker
@@ -467,7 +561,332 @@
       - --type
       - merge
       - --patch
-      - "{{ egress_vpn_patch_json }}"
+      - "{{ {'spec': {'template': {'spec': {'containers': filtered_containers}}}} | to_json }}"
+      - --context
+      - "{{ kube_context }}"
+  register: remove_openconnect_result
+  changed_when: >
+    (remove_openconnect_result.stdout is defined) and
+    ('patched' in remove_openconnect_result.stdout or 'deployment.apps/istio-egressgateway patched' in remove_openconnect_result.stdout)
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - egress_deployment_get is defined
+    - egress_deployment_get.rc == 0
+    - filtered_containers is defined
+    - has_openconnect | default(false) | bool
+
+- name: Check if Egress Gateway deployment exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - deployment
+      - istio-egressgateway
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: egress_deployment_check
+  changed_when: false
+  failed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when: istio_egress_vpn_enabled | default(false)
+
+- name: Set egress gateway exists flag
+  ansible.builtin.set_fact:
+    egress_gateway_exists: "{{ egress_deployment_check.rc == 0 }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_deployment_check is defined
+
+- name: Generate Egress Gateway manifest using istioctl
+  ansible.builtin.command:
+    argv:
+      - "{{ istioctl_path }}"
+      - manifest
+      - generate
+      - --set
+      - profile={{ istio_profile }}
+      - --set
+      - components.egressGateways[0].name=istio-egressgateway
+      - --set
+      - components.egressGateways[0].enabled=true
+  register: egress_manifest_generate
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+
+- name: Save full Egress Gateway manifest to file
+  ansible.builtin.copy:
+    content: "{{ egress_manifest_generate.stdout }}"
+    dest: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-full.yaml"
+    mode: '0644'
+  register: egress_manifest_file
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+    - egress_manifest_generate is defined
+    - egress_manifest_generate.rc == 0
+
+- name: Extract Egress Gateway resources from full manifest
+  ansible.builtin.shell: |
+    # Extract complete resources (ServiceAccount, Service, Deployment) for istio-egressgateway
+    # Split by --- and extract resources that contain istio-egressgateway
+    awk '
+    BEGIN {
+      RS = "\n---\n"
+      ORS = "\n---\n"
+    }
+    {
+      if ($0 ~ /kind: (ServiceAccount|Service|Deployment)/ && $0 ~ /name: istio-egressgateway/) {
+        print $0
+      }
+    }
+    END {
+      if (NR > 0) {
+        print ""
+      }
+    }
+    ' "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-full.yaml" | \
+    sed '1s/^/---\n/' | \
+    sed '$a---'
+  register: egress_resources_extracted
+  changed_when: false
+  args:
+    executable: /bin/bash
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+    - egress_manifest_file is defined
+
+- name: Save extracted Egress Gateway resources to file
+  ansible.builtin.copy:
+    content: "{{ egress_resources_extracted.stdout }}"
+    dest: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-resources.yaml"
+    mode: '0644'
+  register: egress_resources_file
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+    - egress_resources_extracted is defined
+    - egress_resources_extracted.stdout is defined
+    - egress_resources_extracted.stdout | length > 0
+
+- name: Apply Egress Gateway resources
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -v
+      - "{{ resolved_home }}/.cache/istio/manifests:/manifests:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - apply
+      - -f
+      - /manifests/egress-gateway-resources.yaml
+      - --context
+      - "{{ kube_context }}"
+  register: egress_deployment_apply
+  changed_when: >
+    (egress_deployment_apply.stdout is defined) and
+    ('created' in egress_deployment_apply.stdout or 'configured' in egress_deployment_apply.stdout or 'unchanged' in egress_deployment_apply.stdout)
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+    - egress_resources_file is defined
+
+- name: Wait for Egress Gateway to be ready
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - wait
+      - --for=condition=available
+      - --timeout=300s
+      - deployment/istio-egressgateway
+      - -n
+      - istio-system
+      - --context
+      - "{{ kube_context }}"
+  register: egress_ready_vpn
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  retries: 3
+  delay: 10
+  until: egress_ready_vpn.rc == 0
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_gateway_exists | default(false) | bool == false
+    - egress_deployment_apply is defined
+
+- name: Generate Egress Gateway VPN patch configuration
+  ansible.builtin.template:
+    src: egress-gateway-vpn-patch.yaml.j2
+    dest: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-vpn-patch.yaml"
+    mode: '0644'
+  register: egress_vpn_patch_template
+  when: istio_egress_vpn_enabled | default(false)
+
+- name: Get current Egress Gateway containers before VPN patch
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - deployment
+      - istio-egressgateway
+      - -n
+      - istio-system
+      - -o
+      - json
+      - --context
+      - "{{ kube_context }}"
+  register: egress_deployment_before_patch
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+
+- name: Extract existing containers from Egress Gateway
+  ansible.builtin.set_fact:
+    existing_egress_containers: "{{ egress_deployment_before_patch.stdout | from_json | json_query('spec.template.spec.containers') }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - egress_deployment_before_patch is defined
+    - egress_deployment_before_patch.rc == 0
+
+- name: Filter out existing tailscale-vpn container
+  ansible.builtin.set_fact:
+    filtered_egress_containers: "{{ existing_egress_containers | selectattr('name', 'ne', 'tailscale-vpn') | list }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - existing_egress_containers is defined
+
+- name: Read VPN patch YAML file from remote host
+  ansible.builtin.slurp:
+    src: "{{ resolved_home }}/.cache/istio/manifests/egress-gateway-vpn-patch.yaml"
+  register: vpn_patch_file_content
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - existing_egress_containers is defined
+
+- name: Load VPN patch YAML and extract tailscale container
+  ansible.builtin.set_fact:
+    tailscale_container: "{{ (vpn_patch_file_content.content | b64decode | from_yaml | json_query('spec.template.spec.containers[0]')) }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - existing_egress_containers is defined
+    - vpn_patch_file_content is defined
+    - vpn_patch_file_content.content is defined
+
+- name: Merge existing containers with Tailscale container
+  ansible.builtin.set_fact:
+    merged_containers: "{{ filtered_egress_containers | default(existing_egress_containers) + [tailscale_container] }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - existing_egress_containers is defined
+    - tailscale_container is defined
+
+- name: Get existing volumes from Egress Gateway
+  ansible.builtin.set_fact:
+    existing_egress_volumes: "{{ egress_deployment_before_patch.stdout | from_json | json_query('spec.template.spec.volumes') | default([]) }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - merged_containers is defined
+    - egress_deployment_before_patch is defined
+    - egress_deployment_before_patch.rc == 0
+
+- name: Filter out existing Tailscale volumes
+  ansible.builtin.set_fact:
+    filtered_egress_volumes: "{{ existing_egress_volumes | default([]) | selectattr('name', 'ne', 'dev-net-tun') | selectattr('name', 'ne', 'tailscale-state') | list }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - merged_containers is defined
+    - existing_egress_volumes is defined
+
+- name: Merge existing volumes with Tailscale volumes
+  ansible.builtin.set_fact:
+    merged_volumes: "{{ filtered_egress_volumes | default(existing_egress_volumes | default([])) + [{'name': 'dev-net-tun', 'hostPath': {'path': '/dev/net/tun', 'type': 'CharDevice'}}, {'name': 'tailscale-state', 'emptyDir': {}}] }}"
+  when:
+    - istio_egress_vpn_enabled | default(false)
+    - egress_vpn_patch_template is defined
+    - merged_containers is defined
+    - existing_egress_volumes is defined
+
+- name: Apply Egress Gateway VPN patch with merged containers
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - patch
+      - deployment
+      - istio-egressgateway
+      - -n
+      - istio-system
+      - --type
+      - merge
+      - --patch
+      - "{{ {'spec': {'template': {'metadata': {'annotations': {'proxy.istio.io/config': 'proxyMetadata:\n  ISTIO_META_OUTBOUND_TRAFFIC_POLICY: ALLOW_ANY'}}, 'spec': {'containers': merged_containers, 'volumes': merged_volumes, 'shareProcessNamespace': True}}}} | to_json }}"
       - --context
       - "{{ kube_context }}"
   register: egress_vpn_patch_result
@@ -477,9 +896,36 @@
   environment: "{{ istio_proxy_env }}"
   when:
     - istio_egress_vpn_enabled | default(false)
-    - egress_vpn_patch_json is defined
+    - egress_vpn_patch_template is defined
+    - merged_containers is defined
+    - merged_volumes is defined
 
-- name: Enable Istio injection for default namespace
+- name: Get all namespaces for Istio injection
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - get
+      - namespaces
+      - -o
+      - jsonpath={.items[*].metadata.name}
+      - --context
+      - "{{ kube_context }}"
+  register: all_namespaces
+  changed_when: false
+  environment: "{{ istio_proxy_env }}"
+
+- name: Enable Istio injection for all appropriate namespaces
   ansible.builtin.command:
     argv:
       - docker
@@ -496,7 +942,7 @@
       - "{{ kubectl_container_image }}"
       - label
       - namespace
-      - default
+      - "{{ item }}"
       - istio-injection=enabled
       - --overwrite
       - --context
@@ -504,33 +950,13 @@
   register: injection_result
   changed_when: "'labeled' in injection_result.stdout"
   environment: "{{ istio_proxy_env }}"
-
-- name: Enable Istio injection for argocd namespace
-  ansible.builtin.command:
-    argv:
-      - docker
-      - run
-      - --rm
-      - --network
-      - host
-      - -v
-      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
-      - -u
-      - "0:0"
-      - -e
-      - KUBECONFIG=/root/.kube/config
-      - "{{ kubectl_container_image }}"
-      - label
-      - namespace
-      - argocd
-      - istio-injection=enabled
-      - --overwrite
-      - --context
-      - "{{ kube_context }}"
-  register: injection_argocd_result
-  changed_when: "'labeled' in injection_argocd_result.stdout"
-  environment: "{{ istio_proxy_env }}"
-  failed_when: false
+  loop: "{{ all_namespaces.stdout.split() }}"
+  when:
+    - item != 'istio-system'
+    - item != 'kube-public'
+    - item != 'kube-node-lease'
+    - item != 'local-path-storage'
+  ignore_errors: true
 
 - name: Ensure manifest directory exists for argocd sidecar
   ansible.builtin.file:
@@ -575,32 +1001,7 @@
   changed_when: "'created' in argocd_sidecar_result.stdout or 'configured' in argocd_sidecar_result.stdout"
   environment: "{{ istio_proxy_env }}"
 
-- name: Enable Istio injection for kube-system namespace
-  ansible.builtin.command:
-    argv:
-      - docker
-      - run
-      - --rm
-      - --network
-      - host
-      - -v
-      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
-      - -u
-      - "0:0"
-      - -e
-      - KUBECONFIG=/root/.kube/config
-      - "{{ kubectl_container_image }}"
-      - label
-      - namespace
-      - kube-system
-      - istio-injection=enabled
-      - --overwrite
-      - --context
-      - "{{ kube_context }}"
-  register: injection_kube_system_result
-  changed_when: "'labeled' in injection_kube_system_result.stdout"
-  environment: "{{ istio_proxy_env }}"
-  failed_when: false
+
 
 - name: Label argocd services for Kiali application recognition
   ansible.builtin.command:
@@ -930,6 +1331,68 @@
   environment: "{{ istio_proxy_env }}"
   ignore_errors: true
   when: argocd_disable_sidecar_injection | default(false)
+
+- name: Restart deployments in injected namespaces
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - rollout
+      - restart
+      - deployment
+      - -n
+      - "{{ item }}"
+      - --context
+      - "{{ kube_context }}"
+  environment: "{{ istio_proxy_env }}"
+  loop: "{{ all_namespaces.stdout.split() }}"
+  when:
+    - item != 'istio-system'
+    - item != 'kube-public'
+    - item != 'kube-node-lease'
+    - item != 'local-path-storage'
+  ignore_errors: true
+
+- name: Restart statefulsets in injected namespaces
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ kubeconfig_path }}:/root/.kube/config:ro"
+      - -u
+      - "0:0"
+      - -e
+      - KUBECONFIG=/root/.kube/config
+      - "{{ kubectl_container_image }}"
+      - rollout
+      - restart
+      - statefulset
+      - -n
+      - "{{ item }}"
+      - --context
+      - "{{ kube_context }}"
+  environment: "{{ istio_proxy_env }}"
+  loop: "{{ all_namespaces.stdout.split() }}"
+  when:
+    - item != 'istio-system'
+    - item != 'kube-public'
+    - item != 'kube-node-lease'
+    - item != 'local-path-storage'
+  ignore_errors: true
 
 - name: Display Istio configuration summary
   ansible.builtin.debug:
